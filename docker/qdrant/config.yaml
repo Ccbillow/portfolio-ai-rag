@@ -1,0 +1,173 @@
+# AI Resume RAG Assistant
+
+  > An intelligent personal knowledge assistant built with **Java 17 + Spring Boot 3 + langchain4j + Qdrant**, enabling interviewers to have real conversations with my 7-year engineering experience.
+  
+  **Live Demo**: [https://yourname.com/ai-chat](https://yourname.com)
+  **Tech Stack**: Java · Spring Boot · langchain4j · Qdrant · Redis · MySQL · Docker · AWS
+
+---
+
+## What is this?
+
+  Instead of reading a static resume, interviewers can **chat directly with my AI assistant** — which has been trained on my project experiences, technical notes, and code samples accumulated over 7 years of engineering work.
+
+Ask it things like:
+  - *"Tell me about your experience with high-concurrency systems"*
+  - *"How did you use Redis in your projects?"*
+  - *"What's your approach to database optimization?"*
+
+---
+
+## Architecture
+
+  ```
+  ┌─────────────────────────────────────────────────┐
+  │              Ingestion Pipeline (offline)        │
+  │  PDF/MD/Code → Tika → Chunker → Embed → Qdrant  │
+  └─────────────────────────────────────────────────┘
+  │ shared vector store
+  ┌─────────────────────────────────────────────────┐
+  │              Query Pipeline (real-time)          │
+  │  Question → Embed → Qdrant search → LLM → Answer │
+  └─────────────────────────────────────────────────┘
+
+Infrastructure: Docker Compose · Redis cache · MySQL · JWT RBAC · GitHub Actions CI/CD
+  ```
+  
+  > Full architecture diagram: [docs/architecture/](./docs/architecture/)
+
+---
+
+## Key Features
+
+  | Feature | Implementation |
+  |---|---|
+  | RAG pipeline | langchain4j + Qdrant HNSW index |
+  | Hybrid search | BM25 keyword + vector semantic, RRF fusion |
+  | Auth & RBAC | JWT + Spring Security (interviewer / admin roles) |
+  | Rate limiting | Redis sliding window (10 req/min per IP) |
+  | Caching | Redis — identical queries skip LLM call |
+  | Async processing | @Async document ingestion + SSE progress |
+  | Fallback | OpenAI timeout → Ollama local model |
+  | Observability | Spring Actuator + structured logging |
+
+---
+
+## Performance
+
+  > Load test results (JMeter, AWS t3.small, 50 concurrent users):
+  
+  | Metric | Result |
+  |---|---|
+  | Avg response time | - ms |
+  | 99th percentile | - ms |
+  | Throughput | - req/s |
+  | Error rate | - % |
+
+*Screenshots: [docs/screenshots/](./docs/screenshots/)*
+
+---
+
+## Local Development
+
+### Prerequisites
+
+- Java 17+
+- Docker Desktop
+- Ollama (`brew install ollama`)
+
+### Start in 3 commands
+  
+  ```bash
+  # 1. Pull local embedding model
+  ollama pull nomic-embed-text
+  ollama pull llama3.2
+  
+  # 2. Start all infrastructure
+  docker-compose up -d
+  
+  # 3. Run the app
+  ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+  ```
+  
+  API available at `http://localhost:8080`
+  
+  ### Environment variables
+  
+  ```bash
+  # Copy and fill in your keys
+  cp .env.example .env
+  ```
+  
+  | Variable | Description |
+  |---|---|
+  | `OPENAI_API_KEY` | OpenAI API key (prod embedding + LLM) |
+  | `JWT_SECRET` | JWT signing secret (min 32 chars) |
+  | `MYSQL_PASSWORD` | MySQL root password |
+
+---
+
+## API Overview
+
+  ```
+  POST /api/auth/login          # Get JWT token
+  POST /api/documents/upload    # Upload knowledge doc (admin only)
+  GET  /api/documents           # List all documents (admin only)
+  POST /api/chat                # Ask a question (SSE streaming)
+  GET  /api/chat/history        # Get chat history
+  ```
+  
+  > Full API docs: [docs/api/](./docs/api/)
+
+---
+
+## CI/CD
+
+Every push to `main`:
+  1. `mvn test` — unit + integration tests
+  2. Docker image build + push to Docker Hub
+  3. SSH deploy to AWS Lightsail (prod)
+
+---
+
+## Project Structure
+
+```
+src/main/java/com/yourname/rag/
+├── config/        # Spring configurations
+├── controller/    # REST endpoints
+├── service/       # Business logic
+├── dao/           # MyBatis-Plus mappers
+├── domain/        # Entities, DTOs, VOs
+├── common/        # Result wrapper, exceptions, constants
+├── filter/        # JWT auth filter
+└── util/          # JWT, chunking utilities
+```
+
+---
+
+## Tech Decisions
+
+  **Why Qdrant over pgvector?** Native hybrid search (BM25 + vector), Docker-native, langchain4j first-class support, no PostgreSQL extension complexity.
+  
+  **Why langchain4j over LangChain (Python)?** Java-native, type-safe, integrates directly with Spring Boot — no cross-language bridge needed.
+  
+  **Why Ollama for dev?** Zero API cost during development. Same langchain4j interface, one config line to switch to OpenAI in prod.
+
+---
+
+## Roadmap
+
+- [x] Core RAG pipeline
+- [x] JWT + RBAC
+- [x] Redis cache + rate limiting
+- [ ] Hybrid search (BM25 + vector)
+- [ ] Reranker
+- [ ] Admin dashboard UI
+- [ ] Multi-language support (EN/ZH)
+
+---
+
+## Author
+
+  **Your Name** · 7 years Java engineering · [LinkedIn](https://linkedin.com) · [yourname.com](https://yourname.com)
