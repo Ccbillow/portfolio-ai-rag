@@ -1,0 +1,72 @@
+spring:
+  application:
+    name: protfolio-ai-rag
+
+  # Active profile — override with env var: SPRING_PROFILES_ACTIVE=prod
+  profiles:
+    active: dev
+
+  # File upload limits
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 50MB
+      max-request-size: 60MB
+
+  # Jackson — serialize LocalDateTime as ISO string, not array
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    serialization:
+      write-dates-as-timestamps: false
+
+  # Async thread pool for @Async document ingestion
+  task:
+    execution:
+      pool:
+        core-size: 4
+        max-size: 8
+        queue-capacity: 100
+        keep-alive: 60s
+      thread-name-prefix: rag-async-
+
+# Actuator — expose health + info endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+# Knife4j Swagger UI
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+
+# Application-level config
+rag:
+  jwt:
+    secret: ${JWT_SECRET:please-change-this-secret-in-production-min-32-chars}
+    expiration: 86400   # 24 hours in seconds
+  rate-limit:
+    requests-per-minute: 10
+  embedding:
+    chunk-size: 512
+    chunk-overlap: 50
+    top-k: 3
+    min-score: 0.7
+
+logging:
+  level:
+    com.yourname.rag: DEBUG
+    dev.langchain4j: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

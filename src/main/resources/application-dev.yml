@@ -1,0 +1,56 @@
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/rag_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: ${MYSQL_PASSWORD:ragdev123}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 2
+      maximum-pool-size: 10
+      connection-timeout: 30000
+      idle-timeout: 600000
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 2
+
+# MyBatis-Plus
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.yourname.rag.domain.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl  # show SQL in dev
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# langchain4j — dev uses Ollama (completely free, runs locally)
+langchain4j:
+  ollama:
+    base-url: http://localhost:11434
+    embedding-model-name: nomic-embed-text
+    chat-model-name: llama3.2
+    timeout: 60s
+
+# Qdrant — local Docker container
+qdrant:
+  host: localhost
+  port: 6334
+  collection-name: rag_knowledge
+  # No API key needed for local Qdrant
+
+logging:
+  level:
+    org.apache.ibatis: DEBUG
+    com.yourname.rag: DEBUG
