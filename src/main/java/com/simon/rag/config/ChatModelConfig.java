@@ -1,7 +1,9 @@
 package com.simon.rag.config;
 
 import dev.langchain4j.model.anthropic.AnthropicChatModel;
+import dev.langchain4j.model.anthropic.AnthropicStreamingChatModel;
 import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,6 +43,20 @@ public class ChatModelConfig {
 
         log.info("ChatLanguageModel → Claude [{}]", modelName);
         return AnthropicChatModel.builder()
+                .apiKey(apiKey)
+                .modelName(modelName)
+                .maxTokens(1024)
+                .build();
+    }
+
+    @Bean
+    @Profile({"local", "prod"})
+    public StreamingChatLanguageModel claudeStreamingChatModel(
+            @Value("${langchain4j.anthropic.api-key}") String apiKey,
+            @Value("${langchain4j.anthropic.chat-model-name}") String modelName) {
+
+        log.info("StreamingChatLanguageModel → Claude [{}]", modelName);
+        return AnthropicStreamingChatModel.builder()
                 .apiKey(apiKey)
                 .modelName(modelName)
                 .maxTokens(1024)

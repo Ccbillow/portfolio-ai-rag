@@ -7,11 +7,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.MediaType;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.util.Map;
 
 @Slf4j
 @Configuration
@@ -36,57 +36,61 @@ public class QdrantConfig {
     private String apiKey;
 
     @Bean
-    public EmbeddingStore<TextSegment> qdrantEmbeddingStore() {
-        ensureCollectionExists();
+    public WebClient qdrantWebClient() {
+        WebClient.Builder builder = WebClient.builder()
+                .baseUrl("http://" + host + ":" + httpPort);
+        if (apiKey != null && !apiKey.isBlank()) {
+            builder.defaultHeader("api-key", apiKey);
+        }
+        WebClient client = builder.build();
+        ensureCollectionExists(client);
+        return client;
+    }
 
+    /** EmbeddingStore for IngestionRunner.addAll() — langchain4j handles writes via gRPC */
+    @Bean
+    public EmbeddingStore<TextSegment> qdrantEmbeddingStore() {
         QdrantEmbeddingStore.Builder builder = QdrantEmbeddingStore.builder()
                 .host(host)
                 .port(grpcPort)
                 .collectionName(collectionName);
-
         if (apiKey != null && !apiKey.isBlank()) {
             builder.apiKey(apiKey);
         }
-
         log.info("EmbeddingStore → Qdrant [{}] grpc://{}:{}", collectionName, host, grpcPort);
         return builder.build();
     }
 
-    private void ensureCollectionExists() {
-        HttpClient client = HttpClient.newHttpClient();
-        String baseUrl = "http://" + host + ":" + httpPort + "/collections/" + collectionName;
-
+    private void ensureCollectionExists(WebClient client) {
         try {
-            HttpRequest.Builder reqBuilder = HttpRequest.newBuilder().uri(URI.create(baseUrl)).GET();
-            if (apiKey != null && !apiKey.isBlank()) {
-                reqBuilder.header("api-key", apiKey);
-            }
-
-            HttpResponse<String> resp = client.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofString());
-
-            if (resp.statusCode() == 200) {
-                log.info("Qdrant collection '{}' already exists", collectionName);
-                return;
-            }
-
-            // Create collection — vector size must match the embedding model output
-            String body = String.format(
-                    "{\"vectors\": {\"size\": %d, \"distance\": \"Cosine\"}}", vectorSize);
-
-            HttpRequest.Builder createBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(baseUrl))
-                    .header("Content-Type", "application/json")
-                    .PUT(HttpRequest.BodyPublishers.ofString(body));
-            if (apiKey != null && !apiKey.isBlank()) {
-                createBuilder.header("api-key", apiKey);
-            }
-
-            HttpResponse<String> createResp = client.send(createBuilder.build(),
-                    HttpResponse.BodyHandlers.ofString());
-            log.info("Created Qdrant collection '{}', status={}", collectionName, createResp.statusCode());
-
+            client.get()
+                    .uri("/collections/{name}", collectionName)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .block();
+            log.info("Qdrant collection '{}' already exists", collectionName);
+        } catch (WebClientResponseException.NotFound e) {
+            createCollection(client);
         } catch (Exception e) {
-            log.warn("Could not verify/create Qdrant collection '{}': {}", collectionName, e.getMessage());
+            log.warn("Could not check Qdrant collection, will attempt create: {}", e.getMessage());
+            createCollection(client);
         }
+    }
+
+    private void createCollection(WebClient client) {
+        Map<String, Object> body = Map.of(
+                "vectors", Map.of(
+                        "size", vectorSize,
+                        "distance", "Cosine"
+                )
+        );
+        client.put()
+                .uri("/collections/{name}", collectionName)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(body)
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+        log.info("Created Qdrant collection '{}' (dim={}, distance=Cosine)", collectionName, vectorSize);
     }
 }

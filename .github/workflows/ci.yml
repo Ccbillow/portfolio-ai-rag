@@ -1,10 +1,7 @@
 name: CI — Build, Test, Push
 
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:  # disabled auto-trigger — run manually from GitHub Actions tab when ready
 
 env:
   JAVA_VERSION: '17'
