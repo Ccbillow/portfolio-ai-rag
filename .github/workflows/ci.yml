@@ -115,7 +115,8 @@ jobs:
     name: Deploy to AWS Lightsail
     runs-on: ubuntu-latest
     needs: build-and-push
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Only runs when DEPLOY_ENABLED repo-var is set to 'true' (Settings → Variables → Actions)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.DEPLOY_ENABLED == 'true'
 
     steps:
       - name: Deploy via SSH

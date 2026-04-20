@@ -16,7 +16,6 @@ WORKDIR /app
 
 # Security: run as non-root user
 RUN addgroup -S raggroup && adduser -S raguser -G raggroup
-USER raguser
 
 # Copy layers in order of change frequency (least → most)
 COPY --from=builder /app/dependencies/ ./
@@ -24,8 +23,10 @@ COPY --from=builder /app/spring-boot-loader/ ./
 COPY --from=builder /app/snapshot-dependencies/ ./
 COPY --from=builder /app/application/ ./
 
-# Log directory
-RUN mkdir -p /var/log/rag
+# Log directory — must create before switching to non-root user
+RUN mkdir -p /var/log/rag && chown raguser:raggroup /var/log/rag
+
+USER raguser
 
 EXPOSE 8080
 

@@ -35,8 +35,9 @@ public class ChatController {
             @Valid @RequestBody Dtos.ChatRequest request,
             @AuthenticationPrincipal UserDetails userDetails) {
 
-        log.info("Chat request from [{}]: {}", userDetails.getUsername(), request.getQuestion());
-        // TODO: resolve userId from userDetails in Phase 2
+        String username = userDetails != null ? userDetails.getUsername() : "anonymous";
+        log.info("Chat request from [{}]: {}", username, request.getQuestion());
+        // TODO Phase 2: resolve userId from userDetails
         Vos.ChatResponse response = chatService.ask(request, null);
         return Result.success(response);
     }
@@ -47,7 +48,8 @@ public class ChatController {
             @Valid @RequestBody Dtos.ChatRequest request,
             @AuthenticationPrincipal UserDetails userDetails) {
 
-        log.info("Stream chat request from [{}]", userDetails.getUsername());
+        String username = userDetails != null ? userDetails.getUsername() : "anonymous";
+        log.info("Stream chat request from [{}]", username);
         return chatService.askStream(request, null);
     }
 }

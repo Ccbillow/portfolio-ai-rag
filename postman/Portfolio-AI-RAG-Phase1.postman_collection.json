@@ -1,0 +1,334 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "Portfolio AI RAG — Phase 1",
+    "description": "Phase 1 骨架测试集。所有请求指向 http://localhost:8080。\n\n预期行为（Phase 1 stub）：\n- /actuator/health → 200 UP\n- /api/auth/login → 500 stub（Phase 3 实现）\n- /api/auth/logout → 200 success\n- /api/chat → 200 stub answer（需先 mvn compile 修复 NPE）\n- /api/chat/stream → SSE event\n- /api/documents/* → 403 Forbidden（需 ADMIN 角色，Phase 3 实现）",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "item": [
+        {
+          "name": "GET /actuator/health",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "预期响应：{\"status\":\"UP\"}\n无需 Auth，始终可访问。"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /api/auth/login (stub)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "Phase 1 stub。\n预期响应：{\"code\":500,\"message\":\"Auth service not yet implemented — coming in Phase 3\"}\n\n注意：password 校验规则 min=6 chars，否则会先触发 400 validation error。"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/auth/login — validation error demo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"ab\",\n  \"password\": \"123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "故意传短 username/password，触发 @Valid 校验。\n预期响应：{\"code\":400,\"message\":\"Username must be 3-50 characters, Password must be 6-100 characters\"}"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/auth/logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer fake-token-for-phase1-testing"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "logout"]
+            },
+            "description": "Phase 1 stub — 直接返回 success，不做 token 校验。\n预期响应：{\"code\":200,\"message\":\"success\"}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Chat",
+      "item": [
+        {
+          "name": "POST /api/chat (stub answer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"请介绍一下你做过的最复杂的项目\",\n  \"sessionId\": \"postman-test-session-001\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "Phase 1 stub。需要先应用 NPE 修复（ChatController 判空 userDetails）。\n预期响应：\n{\n  \"code\": 200,\n  \"message\": \"success\",\n  \"data\": {\n    \"answer\": \"RAG pipeline coming in Phase 2!\",\n    \"modelUsed\": \"stub\",\n    \"latencyMs\": 0\n  }\n}\n\ncategory 字段可选，不传则对所有分类检索（Phase 2 生效）。"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/chat — with category filter",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"你用过哪些后端技术栈？\",\n  \"category\": \"PROJECT_EXPERIENCE\",\n  \"sessionId\": \"postman-test-session-001\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "带 category 过滤（Phase 2 Qdrant metadata filter 会用到这个字段）。\ncategory 合法值：PROJECT_EXPERIENCE | STUDY_NOTES | CODE_SAMPLE"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/chat — validation error demo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"\",\n  \"sessionId\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat"]
+            },
+            "description": "空 question 和 sessionId，触发 @Valid 校验。\n预期响应：{\"code\":400,\"message\":\"Question must not be blank, Session ID must not be blank\"}"
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/chat/stream (SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"你的工作经历是什么？\",\n  \"sessionId\": \"postman-test-session-sse-001\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/chat/stream",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "chat", "stream"]
+            },
+            "description": "SSE 流式响应（Phase 1 stub）。\nPostman 会在 Response Body 显示：\n  data:Streaming pipeline coming in Phase 2!\n\n提示：Postman 对 SSE 支持有限，建议用 curl 测试：\ncurl -X POST http://localhost:8080/api/chat/stream \\\n  -H 'Content-Type: application/json' \\\n  -d '{\"question\":\"test\",\"sessionId\":\"s1\"}'"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Documents (needs ADMIN — Phase 3)",
+      "item": [
+        {
+          "name": "POST /api/documents/upload",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "选择一个本地文件（PDF / TXT / MD）"
+                },
+                {
+                  "key": "category",
+                  "value": "PROJECT_EXPERIENCE",
+                  "type": "text",
+                  "description": "PROJECT_EXPERIENCE | STUDY_NOTES | CODE_SAMPLE"
+                },
+                {
+                  "key": "description",
+                  "value": "我的 Java 项目经历",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/documents/upload",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "documents", "upload"]
+            },
+            "description": "Phase 1：预期 403 Forbidden（需要 ROLE_ADMIN）。\nPhase 3 实现 JWT 后，带 ADMIN token 才能成功上传。"
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/documents",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/documents",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "documents"]
+            },
+            "description": "Phase 1：预期 403 Forbidden（需要 ROLE_ADMIN）。"
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/documents/task/:taskId",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/documents/task/some-task-id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "documents", "task", "some-task-id"]
+            },
+            "description": "Phase 1：预期 403 Forbidden（需要 ROLE_ADMIN）。\nPhase 3 后替换 some-task-id 为 upload 接口返回的 taskId。"
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/documents/:id",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/api/documents/1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "documents", "1"]
+            },
+            "description": "Phase 1：预期 403 Forbidden（需要 ROLE_ADMIN）。"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Knife4j Swagger UI",
+      "item": [
+        {
+          "name": "GET /doc.html",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/doc.html",
+              "host": ["{{baseUrl}}"],
+              "path": ["doc.html"]
+            },
+            "description": "在浏览器直接访问 http://localhost:8080/doc.html 查看 Knife4j Swagger UI，可在页面上直接调试所有 API。"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
