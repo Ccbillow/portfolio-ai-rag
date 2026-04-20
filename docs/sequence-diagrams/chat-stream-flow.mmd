@@ -1,0 +1,45 @@
+sequenceDiagram
+    autonumber
+    actor Browser
+    participant CC as ChatController
+    participant CS as ChatServiceImpl
+    participant PB as PromptBuilder
+    participant OpenAI as OpenAI Embedding API
+    participant QS as QdrantSearchService
+    participant Qdrant as Qdrant REST :6333
+    participant Claude as Anthropic Claude API
+
+    Browser->>CC: POST /api/chat/stream<br/>{ "question": "What are Simon's skills?" }
+    CC->>CS: askStream(request, userId)
+    CS->>CS: new SseEmitter(60s)
+
+    CS->>OpenAI: embedAll([question])<br/>text-embedding-3-small · ~$0.000001/query
+    OpenAI-->>CS: float[1536] query vector
+
+    CS->>QS: search(queryVector, topK=3, minScore=0.3)
+    QS->>Qdrant: POST /collections/rag_knowledge/points/search<br/>{ vector, limit:3, with_payload:true, score_threshold:0.3 }
+    Qdrant-->>QS: [{ score, payload: { text_segment, fileName, category, docId } }]
+    QS-->>CS: List<SearchHit>
+
+    alt No hits above minScore
+        CS->>Browser: event:message — "I don't have specific information..."
+        CS->>Browser: event:done — [DONE]
+    end
+
+    CS->>Browser: event:sources — List<SourceChunk> (JSON)
+    note over CS,Browser: Sources sent before LLM reply so UI renders immediately
+
+    CS->>CS: join hit texts → context string
+    CS->>PB: build(question, context)
+    PB-->>CS: prompt string
+
+    CS->>Claude: streamingGenerate(prompt)<br/>claude-haiku-4-5-20251001 · maxTokens=1024
+    note over CS,Claude: Each token triggers onNext()
+
+    loop Per token
+        Claude-->>CS: token
+        CS->>Browser: event:message — token
+    end
+
+    Claude-->>CS: onComplete
+    CS->>Browser: event:done — [DONE]

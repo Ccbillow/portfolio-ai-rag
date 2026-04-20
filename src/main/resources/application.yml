@@ -1,28 +1,24 @@
 spring:
   application:
-    name: protfolio-ai-rag
+    name: portfolio-ai-rag
   main:
-    web-application-type: servlet   # stay MVC, webflux is only used for WebClient
+    web-application-type: servlet
 
-  # Active profile — dev=Ollama(free local), local=real APIs+local Docker, prod=real APIs+prod infra
   profiles:
     active: local
 
-  # File upload limits
   servlet:
     multipart:
       enabled: true
       max-file-size: 50MB
       max-request-size: 60MB
 
-  # Jackson — serialize LocalDateTime as ISO string, not array
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: Asia/Shanghai
     serialization:
       write-dates-as-timestamps: false
 
-  # Async thread pool for @Async document ingestion
   task:
     execution:
       pool:
@@ -32,17 +28,15 @@ spring:
         keep-alive: 60s
       thread-name-prefix: rag-async-
 
-# Actuator — expose health + info endpoints
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info
   endpoint:
     health:
-      show-details: when-authorized
+      show-details: never
 
-# Knife4j Swagger UI
 springdoc:
   api-docs:
     path: /v3/api-docs
@@ -50,16 +44,8 @@ springdoc:
     path: /swagger-ui.html
 knife4j:
   enable: true
-  setting:
-    language: zh_cn
 
-# Application-level config
 rag:
-  jwt:
-    secret: ${JWT_SECRET:please-change-this-secret-in-production-min-32-chars}
-    expiration: 86400   # 24 hours in seconds
-  rate-limit:
-    requests-per-minute: 10
   embedding:
     chunk-size: 512
     chunk-overlap: 50
@@ -70,7 +56,7 @@ rag:
 
 logging:
   level:
-    com.yourname.rag: DEBUG
+    com.simon.rag: DEBUG
     dev.langchain4j: INFO
   pattern:
     console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

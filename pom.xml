@@ -131,13 +131,6 @@
 			<version>${langchain4j.version}</version>
 		</dependency>
 
-		<!-- Ollama (local dev — free embedding + LLM) -->
-		<dependency>
-			<groupId>dev.langchain4j</groupId>
-			<artifactId>langchain4j-ollama</artifactId>
-			<version>${langchain4j.version}</version>
-		</dependency>
-
 		<!-- OpenAI (prod — embedding) -->
 		<dependency>
 			<groupId>dev.langchain4j</groupId>

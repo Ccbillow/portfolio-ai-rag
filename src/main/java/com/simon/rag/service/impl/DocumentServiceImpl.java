@@ -2,19 +2,20 @@ package com.simon.rag.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.simon.rag.comm.constant.CacheConstant;
+import com.simon.rag.comm.enums.IngestionStatus;
+import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.entity.Document;
 import com.simon.rag.domain.vo.Vos;
 import com.simon.rag.service.DocumentService;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,15 +31,13 @@ public class DocumentServiceImpl implements DocumentService {
 
     private final DocumentMapper documentMapper;
     private final StringRedisTemplate redisTemplate;
-    private final IngestionRunner ingestionRunner;   // separate bean → @Async works correctly
-
-    @Value("${rag.upload.dir:/tmp/rag-uploads}")
-    private String uploadDir;
+    private final IngestionRunner ingestionRunner;
+    private final RagProperties ragProperties;
 
     @PostConstruct
     void initUploadDir() throws IOException {
-        Files.createDirectories(Path.of(uploadDir));
-        log.info("Upload dir ready: {}", uploadDir);
+        Files.createDirectories(Path.of(ragProperties.getUpload().getDir()));
+        log.info("Upload dir ready: {}", ragProperties.getUpload().getDir());
     }
 
     @Override
@@ -51,7 +50,7 @@ public class DocumentServiceImpl implements DocumentService {
         Document existing = documentMapper.selectOne(
                 new LambdaQueryWrapper<Document>()
                         .eq(Document::getFileName, fileName)
-                        .ne(Document::getStatus, "FAILED")
+                        .ne(Document::getStatus, IngestionStatus.FAILED.name())
                         .eq(Document::getDeleted, 0)
                         .last("LIMIT 1"));
 
@@ -71,7 +70,7 @@ public class DocumentServiceImpl implements DocumentService {
 
         // --- Save file to disk first (decouples file lifetime from HTTP request) ---
         String taskId = UUID.randomUUID().toString();
-        Path diskPath = Path.of(uploadDir, taskId);   // taskId = disk filename for recovery
+        Path diskPath = Path.of(ragProperties.getUpload().getDir(), taskId);
         try {
             Files.write(diskPath, file.getBytes());
         } catch (IOException e) {
@@ -84,33 +83,45 @@ public class DocumentServiceImpl implements DocumentService {
                 .setFileType(file.getContentType())
                 .setFileSize(file.getSize())
                 .setCategory(request.getCategory())
-                .setStatus("PENDING")
+                .setStatus(IngestionStatus.PENDING.name())
                 .setTaskId(taskId)
                 .setUploadedBy(uploadedBy);
         documentMapper.insert(doc);
 
         redisTemplate.opsForValue().set(
-                CacheConstant.INGEST_TASK_PREFIX + taskId, "PENDING", 24, TimeUnit.HOURS);
+                CacheConstant.INGEST_TASK_PREFIX + taskId,
+                IngestionStatus.PENDING.name(), 24, TimeUnit.HOURS);
 
-        // --- Hand off to async runner (real @Async via separate bean proxy) ---
         ingestionRunner.ingest(doc.getId(), taskId, fileName, request.getCategory());
 
         return Vos.DocumentResponse.builder()
                 .id(doc.getId())
                 .fileName(doc.getFileName())
                 .category(doc.getCategory())
-                .status("PENDING")
+                .status(IngestionStatus.PENDING.name())
                 .taskId(taskId)
                 .build();
     }
 
     @Override
     public Vos.IngestTaskResponse getTaskStatus(String taskId) {
+        // Primary source: Redis (fast)
         String status = redisTemplate.opsForValue().get(CacheConstant.INGEST_TASK_PREFIX + taskId);
+
+        // Fallback: MySQL — covers Redis restart / TTL expiry
+        if (status == null) {
+            Document doc = documentMapper.selectOne(
+                    new LambdaQueryWrapper<Document>()
+                            .eq(Document::getTaskId, taskId)
+                            .last("LIMIT 1"));
+            status = doc != null ? doc.getStatus() : null;
+        }
+
         return Vos.IngestTaskResponse.builder()
                 .taskId(taskId)
                 .status(status != null ? status : "NOT_FOUND")
-                .progress("COMPLETED".equals(status) ? 100 : "PROCESSING".equals(status) ? 50 : 0)
+                .progress(IngestionStatus.COMPLETED.name().equals(status) ? 100
+                        : IngestionStatus.PROCESSING.name().equals(status) ? 50 : 0)
                 .build();
     }
 

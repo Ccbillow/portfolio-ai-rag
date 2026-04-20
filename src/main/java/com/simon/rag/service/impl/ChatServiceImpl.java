@@ -1,5 +1,6 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.config.RagProperties;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.vo.Vos;
 import com.simon.rag.service.ChatService;
@@ -26,15 +27,14 @@ import java.util.stream.Collectors;
 public class ChatServiceImpl implements ChatService {
 
     private final EmbeddingModel embeddingModel;
-    private final QdrantSearchService qdrantSearchService;   // direct REST — avoids lc4j cosine bug
+    private final QdrantSearchService qdrantSearchService;
     private final ChatLanguageModel chatLanguageModel;
     private final StreamingChatLanguageModel streamingChatLanguageModel;
+    private final RagProperties ragProperties;
+    private final PromptBuilder promptBuilder;
 
-    @Value("${rag.embedding.top-k:3}")
-    private int topK;
-
-    @Value("${rag.embedding.min-score:0.5}")
-    private double minScore;
+    @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
+    private String modelName;
 
     // ----------------------------------------------------------------
     //  Synchronous — Postman / REST clients
@@ -45,33 +45,34 @@ public class ChatServiceImpl implements ChatService {
         long start = System.currentTimeMillis();
         log.info("RAG ask: '{}'", request.getQuestion());
 
-        // Step 1: embed the question via OpenAI — 💰 tiny cost (~$0.000001)
+        // 1. 💰 Embed question via OpenAI — ~$0.000001 per query
         float[] queryVector = embedQuestion(request.getQuestion());
 
-        // Step 2: search Qdrant via REST — free, local, uses Qdrant's cosine score
-        List<SearchHit> hits = qdrantSearchService.search(queryVector, topK, minScore);
+        // 2. Search Qdrant for the top-k most relevant knowledge chunks
+        RagProperties.Embedding cfg = ragProperties.getEmbedding();
+        List<SearchHit> hits = qdrantSearchService.search(queryVector, cfg.getTopK(), cfg.getMinScore());
 
         if (hits.isEmpty()) {
             return Vos.ChatResponse.builder()
                     .answer("I don't have specific information about that in my knowledge base. "
                             + "Please try rephrasing your question.")
                     .sources(List.of())
-                    .modelUsed("claude-haiku-4-5-20251001")
+                    .modelUsed(modelName)
                     .latencyMs(System.currentTimeMillis() - start)
                     .build();
         }
 
-        // Step 3: assemble context from retrieved chunks
+        // 3. Assemble retrieved chunks into a single context string
         String context = hits.stream().map(SearchHit::text)
                 .collect(Collectors.joining("\n\n---\n\n"));
 
-        // Step 4: call Claude Haiku — 💰 main cost point
-        String answer = chatLanguageModel.generate(buildPrompt(request.getQuestion(), context));
+        // 4. 💰 Call Claude — main cost point (~$0.0001–0.0005 per answer)
+        String answer = chatLanguageModel.generate(promptBuilder.build(request.getQuestion(), context));
 
         return Vos.ChatResponse.builder()
                 .answer(answer)
                 .sources(toSources(hits))
-                .modelUsed("claude-haiku-4-5-20251001")
+                .modelUsed(modelName)
                 .latencyMs(System.currentTimeMillis() - start)
                 .build();
     }
@@ -85,7 +86,9 @@ public class ChatServiceImpl implements ChatService {
         SseEmitter emitter = new SseEmitter(60_000L);
         try {
             float[] queryVector = embedQuestion(request.getQuestion());
-            List<SearchHit> hits = qdrantSearchService.search(queryVector, topK, minScore);
+
+            RagProperties.Embedding cfg = ragProperties.getEmbedding();
+            List<SearchHit> hits = qdrantSearchService.search(queryVector, cfg.getTopK(), cfg.getMinScore());
             log.info("Stream — Qdrant returned {} hits", hits.size());
 
             if (hits.isEmpty()) {
@@ -96,15 +99,13 @@ public class ChatServiceImpl implements ChatService {
                 return emitter;
             }
 
-            // Send sources immediately so frontend can render them while waiting for LLM
             emitter.send(SseEmitter.event().name("sources").data(toSources(hits)));
 
             String context = hits.stream().map(SearchHit::text)
                     .collect(Collectors.joining("\n\n---\n\n"));
 
-            // Stream Claude tokens — each token fires onNext()
             streamingChatLanguageModel.generate(
-                    buildPrompt(request.getQuestion(), context),
+                    promptBuilder.build(request.getQuestion(), context),
                     new StreamingResponseHandler<AiMessage>() {
                         @Override
                         public void onNext(String token) {
@@ -144,7 +145,6 @@ public class ChatServiceImpl implements ChatService {
     // ----------------------------------------------------------------
 
     private float[] embedQuestion(String question) {
-        // embedAll avoids the embed(String) zero-vector bug in langchain4j 0.35.0
         return embeddingModel
                 .embedAll(List.of(TextSegment.from(question)))
                 .content()
@@ -152,31 +152,24 @@ public class ChatServiceImpl implements ChatService {
                 .vector();
     }
 
-    private String buildPrompt(String question, String context) {
-        return """
-                You are Simon's professional AI assistant. \
-                Answer questions about Simon's background, skills, and experience \
-                based solely on the provided context. \
-                Be concise and professional.
-
-                Context from Simon's knowledge base:
-                """ + context + """
-
-
-                Question: """ + question + """
-
-
-                Answer:""";
-    }
-
     private List<Vos.SourceChunk> toSources(List<SearchHit> hits) {
         return hits.stream()
-                .map(h -> Vos.SourceChunk.builder()
-                        .fileName(h.fileName())
-                        .category(h.category())
-                        .score(h.score())
-                        .contentPreview(h.text().substring(0, Math.min(200, h.text().length())))
-                        .build())
+                .map(h -> {
+                    Long docId = null;
+                    try {
+                        if (h.docId() != null) docId = Long.parseLong(h.docId());
+                    } catch (NumberFormatException ignored) {}
+
+                    return Vos.SourceChunk.builder()
+                            .documentId(docId)
+                            .fileName(h.fileName())
+                            .category(h.category())
+                            .score(h.score())
+                            .contentPreview(h.text() != null
+                                    ? h.text().substring(0, Math.min(200, h.text().length()))
+                                    : "")
+                            .build();
+                })
                 .collect(Collectors.toList());
     }
 }

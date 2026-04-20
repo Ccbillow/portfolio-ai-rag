@@ -6,29 +6,9 @@ import lombok.Data;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/**
- * VOs (View Objects) — used for API response serialization.
- */
 public final class Vos {
 
     private Vos() {}
-
-    // ----------------------------------------------------------------
-    //  Auth
-    // ----------------------------------------------------------------
-
-    @Data
-    @Builder
-    public static class LoginResponse {
-        private String token;
-        private String username;
-        private String role;
-        private long expiresIn;   // seconds until token expiry
-    }
-
-    // ----------------------------------------------------------------
-    //  Chat
-    // ----------------------------------------------------------------
 
     @Data
     @Builder
@@ -45,13 +25,9 @@ public final class Vos {
         private Long documentId;
         private String fileName;
         private String category;
-        private double score;          // cosine similarity
-        private String contentPreview; // first 200 chars of chunk
+        private double score;
+        private String contentPreview;
     }
-
-    // ----------------------------------------------------------------
-    //  Document
-    // ----------------------------------------------------------------
 
     @Data
     @Builder

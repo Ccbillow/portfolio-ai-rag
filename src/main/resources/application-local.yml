@@ -1,10 +1,3 @@
-# ================================================================
-# Local profile — real OpenAI + Claude APIs, local Docker infra.
-# Start Docker first: docker-compose up -d
-# Then set env vars: OPENAI_API_KEY, ANTHROPIC_API_KEY
-# Run Spring Boot with: SPRING_PROFILES_ACTIVE=local
-# ================================================================
-
 spring:
   datasource:
     url: jdbc:mysql://localhost:3306/rag_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
@@ -14,7 +7,6 @@ spring:
     hikari:
       minimum-idle: 2
       maximum-pool-size: 10
-      connection-timeout: 30000
 
   data:
     redis:
@@ -25,7 +17,6 @@ spring:
       lettuce:
         pool:
           max-active: 8
-          max-idle: 8
           min-idle: 2
 
 mybatis-plus:
@@ -40,16 +31,14 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
-# Real APIs — keys come from environment variables
 langchain4j:
   open-ai:
     api-key: ${OPENAI_API_KEY}
     embedding-model-name: text-embedding-3-small
-    timeout: 30s
-    max-retries: 3
   anthropic:
     api-key: ${ANTHROPIC_API_KEY}
     chat-model-name: claude-haiku-4-5-20251001
+    max-tokens: 512
 
 qdrant:
   host: localhost
@@ -58,8 +47,10 @@ qdrant:
   collection-name: rag_knowledge
   vector-size: 1536
 
+cors:
+  allowed-origins: "http://localhost:*"
+
 logging:
   level:
-    org.apache.ibatis: DEBUG
     com.simon.rag: DEBUG
     dev.langchain4j: INFO

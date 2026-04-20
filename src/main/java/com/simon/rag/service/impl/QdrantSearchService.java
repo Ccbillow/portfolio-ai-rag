@@ -22,7 +22,7 @@ public class QdrantSearchService {
     @Value("${qdrant.collection-name}")
     private String collectionName;
 
-    public record SearchHit(double score, String text, String fileName, String category) {}
+    public record SearchHit(double score, String text, String fileName, String category, String docId) {}
 
     // ---- Request / Response DTOs ----
 
@@ -72,7 +72,8 @@ public class QdrantSearchService {
                 point.score(),
                 getString(p, "text_segment"),
                 getString(p, "fileName"),
-                getString(p, "category")
+                getString(p, "category"),
+                getString(p, "docId")
         );
     }
 

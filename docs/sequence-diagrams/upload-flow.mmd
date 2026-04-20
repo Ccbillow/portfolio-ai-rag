@@ -1,0 +1,57 @@
+sequenceDiagram
+    autonumber
+    actor Client
+    participant DC as DocumentController
+    participant DS as DocumentServiceImpl
+    participant DB as MySQL (rag_document)
+    participant Redis
+    participant IR as IngestionRunner (@Async)
+    participant OpenAI as OpenAI Embedding API
+    participant Qdrant as Qdrant (vector store)
+
+    Client->>DC: POST /api/documents/upload<br/>(multipart: file + category)
+    DC->>DS: upload(file, request, userId)
+
+    DS->>DB: SELECT WHERE fileName=X AND status!=FAILED
+    alt File already exists (dedup)
+        DB-->>DS: existing record
+        DS-->>DC: DocumentResponse (message="skipped")
+        DC-->>Client: 200 OK (no embedding cost)
+    end
+
+    DS->>DS: generate taskId (UUID)
+    DS->>DS: Files.write(uploadDir/taskId, bytes)
+
+    DS->>DB: INSERT rag_document (status=PENDING, taskId)
+    DB-->>DS: docId (auto-increment)
+
+    DS->>Redis: SET ingest:task:{taskId} = PENDING TTL 24h
+    DS->>IR: ingest(docId, taskId, fileName, category)
+    note over DS,IR: Non-blocking — IR runs on rag-async-* thread pool
+
+    DS-->>DC: DocumentResponse (status=PENDING, taskId)
+    DC-->>Client: 200 OK
+
+    note over IR: Background thread (rag-async-*)
+
+    IR->>Redis: SET ingest:task:{taskId} = PROCESSING
+    IR->>IR: Files.readAllBytes(uploadDir/taskId)
+    IR->>IR: tika.parseToString() → plain text
+    IR->>IR: splitter.split() → List<TextSegment> (512 chars, 50 overlap)
+    IR->>IR: attach metadata: docId, fileName, category
+
+    IR->>OpenAI: embedAll(segments)<br/>text-embedding-3-small · $0.02/1M tokens
+    OpenAI-->>IR: List<Embedding> (1536-dim vectors)
+
+    IR->>Qdrant: addAll(embeddings, segments) gRPC :6334
+    Qdrant-->>IR: OK
+
+    IR->>DB: UPDATE status=COMPLETED, chunk_count=N
+    IR->>Redis: SET ingest:task:{taskId} = COMPLETED
+    IR->>IR: Files.deleteIfExists(uploadDir/taskId)
+
+    alt Ingestion fails
+        IR->>DB: UPDATE status=FAILED, error_message
+        IR->>Redis: SET ingest:task:{taskId} = FAILED
+        note over IR: Disk file retained for retry recovery
+    end
