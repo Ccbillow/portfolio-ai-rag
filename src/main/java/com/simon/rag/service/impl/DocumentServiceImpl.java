@@ -1,5 +1,6 @@
 package com.simon.rag.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.simon.rag.comm.constant.CacheConstant;
 import com.simon.rag.dao.DocumentMapper;
 import com.simon.rag.domain.dto.Dtos;
@@ -8,28 +9,20 @@ import com.simon.rag.domain.vo.Vos;
 import com.simon.rag.service.DocumentService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import jakarta.annotation.PostConstruct;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-/**
- * DocumentServiceImpl — handles the ingestion lifecycle.
- *
- * <p>Upload flow:
- * <ol>
- *   <li>Validate file type and size</li>
- *   <li>Save document metadata to MySQL (status=PENDING)</li>
- *   <li>Return taskId immediately (non-blocking)</li>
- *   <li>@Async: Tika parse → chunk → embed → Qdrant store</li>
- *   <li>Update status to COMPLETED or FAILED</li>
- * </ol>
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -37,18 +30,57 @@ public class DocumentServiceImpl implements DocumentService {
 
     private final DocumentMapper documentMapper;
     private final StringRedisTemplate redisTemplate;
+    private final IngestionRunner ingestionRunner;   // separate bean → @Async works correctly
 
-    // TODO Phase 2: inject EmbeddingService and QdrantEmbeddingStore
+    @Value("${rag.upload.dir:/tmp/rag-uploads}")
+    private String uploadDir;
+
+    @PostConstruct
+    void initUploadDir() throws IOException {
+        Files.createDirectories(Path.of(uploadDir));
+        log.info("Upload dir ready: {}", uploadDir);
+    }
 
     @Override
     public Vos.DocumentResponse upload(MultipartFile file,
                                         Dtos.DocumentUploadRequest request,
                                         Long uploadedBy) {
-        String taskId = UUID.randomUUID().toString();
+        String fileName = file.getOriginalFilename();
 
-        // Persist metadata immediately
+        // --- Deduplication: skip if a non-failed record with same filename exists ---
+        Document existing = documentMapper.selectOne(
+                new LambdaQueryWrapper<Document>()
+                        .eq(Document::getFileName, fileName)
+                        .ne(Document::getStatus, "FAILED")
+                        .eq(Document::getDeleted, 0)
+                        .last("LIMIT 1"));
+
+        if (existing != null) {
+            log.info("Duplicate upload skipped: fileName='{}', existingId={}", fileName, existing.getId());
+            return Vos.DocumentResponse.builder()
+                    .id(existing.getId())
+                    .fileName(existing.getFileName())
+                    .category(existing.getCategory())
+                    .status(existing.getStatus())
+                    .taskId(existing.getTaskId())
+                    .chunkCount(existing.getChunkCount())
+                    .createdAt(existing.getCreatedAt())
+                    .message("File already exists — embedding skipped to avoid duplicate cost")
+                    .build();
+        }
+
+        // --- Save file to disk first (decouples file lifetime from HTTP request) ---
+        String taskId = UUID.randomUUID().toString();
+        Path diskPath = Path.of(uploadDir, taskId);   // taskId = disk filename for recovery
+        try {
+            Files.write(diskPath, file.getBytes());
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to save uploaded file to disk", e);
+        }
+
+        // --- Persist metadata to MySQL ---
         Document doc = new Document()
-                .setFileName(file.getOriginalFilename())
+                .setFileName(fileName)
                 .setFileType(file.getContentType())
                 .setFileSize(file.getSize())
                 .setCategory(request.getCategory())
@@ -57,15 +89,11 @@ public class DocumentServiceImpl implements DocumentService {
                 .setUploadedBy(uploadedBy);
         documentMapper.insert(doc);
 
-        // Mark task in Redis so status endpoint can poll it
         redisTemplate.opsForValue().set(
-                CacheConstant.INGEST_TASK_PREFIX + taskId,
-                "PENDING",
-                24, TimeUnit.HOURS
-        );
+                CacheConstant.INGEST_TASK_PREFIX + taskId, "PENDING", 24, TimeUnit.HOURS);
 
-        // Kick off async pipeline (non-blocking)
-        processAsync(doc.getId(), file, taskId);
+        // --- Hand off to async runner (real @Async via separate bean proxy) ---
+        ingestionRunner.ingest(doc.getId(), taskId, fileName, request.getCategory());
 
         return Vos.DocumentResponse.builder()
                 .id(doc.getId())
@@ -76,28 +104,13 @@ public class DocumentServiceImpl implements DocumentService {
                 .build();
     }
 
-    @Async
-    protected void processAsync(Long docId, MultipartFile file, String taskId) {
-        // TODO Phase 2 — Tika parse → chunk → embed → Qdrant
-        log.info("Async ingestion started for docId={}, taskId={}", docId, taskId);
-        redisTemplate.opsForValue().set(
-                CacheConstant.INGEST_TASK_PREFIX + taskId, "PROCESSING");
-        // Simulated delay for now
-        try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
-        redisTemplate.opsForValue().set(
-                CacheConstant.INGEST_TASK_PREFIX + taskId, "COMPLETED");
-        documentMapper.updateIngestionResult(docId, "COMPLETED", 0, null);
-        log.info("Async ingestion stub completed for docId={}", docId);
-    }
-
     @Override
     public Vos.IngestTaskResponse getTaskStatus(String taskId) {
-        String status = redisTemplate.opsForValue()
-                .get(CacheConstant.INGEST_TASK_PREFIX + taskId);
+        String status = redisTemplate.opsForValue().get(CacheConstant.INGEST_TASK_PREFIX + taskId);
         return Vos.IngestTaskResponse.builder()
                 .taskId(taskId)
                 .status(status != null ? status : "NOT_FOUND")
-                .progress("COMPLETED".equals(status) ? 100 : 50)
+                .progress("COMPLETED".equals(status) ? 100 : "PROCESSING".equals(status) ? 50 : 0)
                 .build();
     }
 
@@ -119,8 +132,8 @@ public class DocumentServiceImpl implements DocumentService {
 
     @Override
     public void delete(Long documentId) {
-        // TODO Phase 2: also delete vectors from Qdrant by metadata filter
+        // TODO: delete vectors from Qdrant by metadata filter (docId) in a future phase
         documentMapper.deleteById(documentId);
-        log.info("Document {} deleted from MySQL — Qdrant cleanup coming in Phase 2", documentId);
+        log.info("Document {} deleted from MySQL — Qdrant vector cleanup is a future TODO", documentId);
     }
 }

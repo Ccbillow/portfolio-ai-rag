@@ -2,9 +2,9 @@ spring:
   application:
     name: protfolio-ai-rag
 
-  # Active profile — override with env var: SPRING_PROFILES_ACTIVE=prod
+  # Active profile — dev=Ollama(free local), local=real APIs+local Docker, prod=real APIs+prod infra
   profiles:
-    active: dev
+    active: local
 
   # File upload limits
   servlet:
@@ -62,7 +62,9 @@ rag:
     chunk-size: 512
     chunk-overlap: 50
     top-k: 3
-    min-score: 0.7
+    min-score: 0.5
+  upload:
+    dir: ${RAG_UPLOAD_DIR:/tmp/rag-uploads}
 
 logging:
   level:

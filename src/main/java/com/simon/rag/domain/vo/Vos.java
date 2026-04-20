@@ -64,6 +64,7 @@ public final class Vos {
         private String status;
         private String taskId;
         private LocalDateTime createdAt;
+        private String message;
     }
 
     @Data

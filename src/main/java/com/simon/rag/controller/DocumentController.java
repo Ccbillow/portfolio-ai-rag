@@ -9,7 +9,6 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -34,7 +33,7 @@ public class DocumentController {
 
     @Operation(summary = "Upload a knowledge document")
     @PostMapping("/upload")
-    @PreAuthorize("hasRole('ADMIN')")
+
     public Result<Vos.DocumentResponse> upload(
             @RequestParam("file") MultipartFile file,
             @Valid @ModelAttribute Dtos.DocumentUploadRequest request) {
@@ -47,21 +46,21 @@ public class DocumentController {
 
     @Operation(summary = "List all documents")
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN')")
+
     public Result<List<Vos.DocumentResponse>> listAll() {
         return Result.success(documentService.listAll());
     }
 
     @Operation(summary = "Poll async ingestion task progress")
     @GetMapping("/task/{taskId}")
-    @PreAuthorize("hasRole('ADMIN')")
+
     public Result<Vos.IngestTaskResponse> getTaskStatus(@PathVariable String taskId) {
         return Result.success(documentService.getTaskStatus(taskId));
     }
 
     @Operation(summary = "Delete a document and its vector chunks")
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN')")
+
     public Result<Void> delete(@PathVariable Long id) {
         documentService.delete(id);
         return Result.success();

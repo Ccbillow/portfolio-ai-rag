@@ -132,10 +132,17 @@
 			<version>${langchain4j.version}</version>
 		</dependency>
 
-		<!-- OpenAI (prod — embedding + GPT) -->
+		<!-- OpenAI (prod — embedding) -->
 		<dependency>
 			<groupId>dev.langchain4j</groupId>
 			<artifactId>langchain4j-open-ai</artifactId>
+			<version>${langchain4j.version}</version>
+		</dependency>
+
+		<!-- Anthropic Claude (prod — chat LLM) -->
+		<dependency>
+			<groupId>dev.langchain4j</groupId>
+			<artifactId>langchain4j-anthropic</artifactId>
 			<version>${langchain4j.version}</version>
 		</dependency>
 
@@ -150,6 +157,13 @@
 		<!-- ======================================================== -->
 		<!--  Document Parsing — Apache Tika                           -->
 		<!-- ======================================================== -->
+
+		<!-- Core facade — provides the simple Tika class -->
+		<dependency>
+			<groupId>org.apache.tika</groupId>
+			<artifactId>tika-core</artifactId>
+			<version>${tika.version}</version>
+		</dependency>
 
 		<!-- Full package: supports PDF, Docx, HTML, Markdown, plain text -->
 		<dependency>
