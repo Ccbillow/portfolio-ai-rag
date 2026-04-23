@@ -45,6 +45,16 @@ public final class Vos {
 
     @Data
     @Builder
+    public static class LoginResponse {
+        private String token;
+        private String tokenType;   // "Bearer"
+        private String username;
+        private String role;
+        private long expiresInSeconds;
+    }
+
+    @Data
+    @Builder
     public static class IngestTaskResponse {
         private String taskId;
         private String status;    // PENDING | PROCESSING | COMPLETED | FAILED

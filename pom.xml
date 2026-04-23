@@ -204,6 +204,15 @@
 		</dependency>
 
 		<!-- ======================================================== -->
+		<!--  Rate Limiting — Bucket4j in-process per-IP               -->
+		<!-- ======================================================== -->
+		<dependency>
+			<groupId>com.bucket4j</groupId>
+			<artifactId>bucket4j-core</artifactId>
+			<version>8.10.1</version>
+		</dependency>
+
+		<!-- ======================================================== -->
 		<!--  Resilience4j — circuit breaker + retry + fallback        -->
 		<!-- ======================================================== -->
 		<dependency>

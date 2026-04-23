@@ -120,6 +120,28 @@ public class QdrantSearchService {
         );
     }
 
+    /**
+     * Delete all points belonging to a document (matched by docId payload field).
+     * Uses Qdrant's POST /points/delete with a filter.
+     */
+    public void deleteByDocId(String docId) {
+        Map<String, Object> body = Map.of(
+                "filter", Map.of(
+                        "must", List.of(
+                                Map.of("key", "docId", "match", Map.of("value", docId))
+                        )
+                )
+        );
+        qdrantWebClient.post()
+                .uri("/collections/{name}/points/delete", collectionName)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(body)
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+        log.info("Qdrant: deleted all chunks for docId={}", docId);
+    }
+
     private String getString(Map<String, Object> payload, String key) {
         if (payload == null) return null;
         Object v = payload.get(key);

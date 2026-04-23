@@ -76,19 +76,8 @@ CREATE TABLE IF NOT EXISTS rag_chat_history (
 INSERT IGNORE INTO sys_user (username, password, role, display_name, enabled)
 VALUES (
     'admin',
-    '$2a$10$7EqJtq98hPqEX7fNZaFWoOwhpZ9dLxQo5Qhu2S8xT6HmXP5LDGU2.',
+    '$2a$10$tP/4FjvJ6xsSL37.ROxkquu7ar/EWNySDFKTKcThocZtItDDeTFgS',
     'ROLE_ADMIN',
     'Admin',
-    1
-);
-
--- Interviewer account for sharing with recruiters
--- Password: Interview@2024
-INSERT IGNORE INTO sys_user (username, password, role, display_name, enabled)
-VALUES (
-    'interviewer',
-    '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p9UaqZFNp1j5yN1qEFCa2.',
-    'ROLE_INTERVIEWER',
-    'Interviewer',
     1
 );

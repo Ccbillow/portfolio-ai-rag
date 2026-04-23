@@ -3,6 +3,8 @@ package com.simon.rag.domain.dto;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
+import lombok.AllArgsConstructor;
+import lombok.NoArgsConstructor;
 
 public final class Dtos {
 
@@ -20,6 +22,18 @@ public final class Dtos {
 
         /** Optional — session ID for future multi-turn conversation grouping */
         private String sessionId;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class LoginRequest {
+
+        @NotBlank(message = "Username must not be blank")
+        private String username;
+
+        @NotBlank(message = "Password must not be blank")
+        private String password;
     }
 
     @Data

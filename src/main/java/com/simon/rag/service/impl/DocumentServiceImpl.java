@@ -29,6 +29,7 @@ public class DocumentServiceImpl implements DocumentService {
     private final DocumentMapper documentMapper;
     private final RedisCacheService redisCacheService;
     private final IngestionRunner ingestionRunner;
+    private final QdrantSearchService qdrantSearchService;
     private final RagProperties ragProperties;
 
     @PostConstruct
@@ -138,8 +139,12 @@ public class DocumentServiceImpl implements DocumentService {
 
     @Override
     public void delete(Long documentId) {
-        // TODO: delete vectors from Qdrant by metadata filter (docId) in a future phase
+        try {
+            qdrantSearchService.deleteByDocId(String.valueOf(documentId));
+        } catch (Exception e) {
+            log.warn("Qdrant delete failed for docId={}: {}", documentId, e.getMessage());
+        }
         documentMapper.deleteById(documentId);
-        log.info("Document {} deleted from MySQL — Qdrant vector cleanup is a future TODO", documentId);
+        log.info("Document {} deleted from MySQL and Qdrant", documentId);
     }
 }
