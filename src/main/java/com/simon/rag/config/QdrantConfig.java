@@ -84,13 +84,18 @@ public class QdrantConfig {
                         "distance", "Cosine"
                 )
         );
-        client.put()
-                .uri("/collections/{name}", collectionName)
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(body)
-                .retrieve()
-                .toBodilessEntity()
-                .block();
-        log.info("Created Qdrant collection '{}' (dim={}, distance=Cosine)", collectionName, vectorSize);
+        try {
+            client.put()
+                    .uri("/collections/{name}", collectionName)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(body)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .block();
+            log.info("Created Qdrant collection '{}' (dim={}, distance=Cosine)", collectionName, vectorSize);
+        } catch (Exception e) {
+            log.error("Failed to create Qdrant collection '{}': {}", collectionName, e.getMessage());
+            throw new IllegalStateException("Qdrant collection creation failed — check Qdrant is running", e);
+        }
     }
 }

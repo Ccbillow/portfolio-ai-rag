@@ -22,7 +22,7 @@ public class QdrantSearchService {
     @Value("${qdrant.collection-name}")
     private String collectionName;
 
-    public record SearchHit(double score, String text, String fileName, String category, String docId) {}
+    public record SearchHit(double score, String text, String fileName, String category, String docId, int chunkIndex) {}
 
     // ---- Request / Response DTOs ----
 
@@ -33,6 +33,21 @@ public class QdrantSearchService {
             @JsonProperty("with_vector") boolean withVector,
             @JsonProperty("score_threshold") double scoreThreshold
     ) {}
+
+    private record ScrollRequest(
+            @JsonProperty("with_payload") boolean withPayload,
+            @JsonProperty("with_vector") boolean withVector,
+            int limit,
+            @JsonProperty("filter") Map<String, Object> filter
+    ) {}
+
+    // Scroll API returns: { "result": { "points": [...] } }
+    // (different from Search API which returns: { "result": [...] })
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record ScrollResponse(ScrollResult result) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record ScrollResult(List<ScoredPoint> points) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record SearchResponse(List<ScoredPoint> result) {}
@@ -66,14 +81,42 @@ public class QdrantSearchService {
         return hits;
     }
 
+    /**
+     * Fetch a specific chunk by docId + chunkIndex via Qdrant scroll + filter.
+     * Used to expand a hit to its neighbouring chunks for richer context.
+     */
+    public List<SearchHit> fetchByDocIdAndChunkIndex(String docId, int chunkIndex) {
+        Map<String, Object> filter = Map.of(
+                "must", List.of(
+                        Map.of("key", "docId",       "match", Map.of("value", docId)),
+                        Map.of("key", "chunkIndex",  "match", Map.of("value", String.valueOf(chunkIndex)))
+                )
+        );
+        ScrollRequest body = new ScrollRequest(true, false, 1, filter);
+
+        ScrollResponse response = qdrantWebClient.post()
+                .uri("/collections/{name}/points/scroll", collectionName)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(body)
+                .retrieve()
+                .bodyToMono(ScrollResponse.class)
+                .block();
+
+        if (response == null || response.result() == null || response.result().points() == null) return List.of();
+        return response.result().points().stream().map(this::toSearchHit).toList();
+    }
+
     private SearchHit toSearchHit(ScoredPoint point) {
         Map<String, Object> p = point.payload();
+        int idx = 0;
+        try { idx = Integer.parseInt(getString(p, "chunkIndex")); } catch (Exception ignored) {}
         return new SearchHit(
                 point.score(),
                 getString(p, "text_segment"),
                 getString(p, "fileName"),
                 getString(p, "category"),
-                getString(p, "docId")
+                getString(p, "docId"),
+                idx
         );
     }
 

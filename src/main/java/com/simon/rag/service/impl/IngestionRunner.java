@@ -1,6 +1,5 @@
 package com.simon.rag.service.impl;
 
-import com.simon.rag.comm.constant.CacheConstant;
 import com.simon.rag.comm.enums.IngestionStatus;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
@@ -14,7 +13,6 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tika.Tika;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -43,7 +41,7 @@ public class IngestionRunner {
     private final EmbeddingModel embeddingModel;
     private final EmbeddingStore<TextSegment> embeddingStore;
     private final DocumentMapper documentMapper;
-    private final StringRedisTemplate redisTemplate;
+    private final RedisCacheService redisCacheService;
     private final RagProperties ragProperties;
 
     // Singletons — heavyweight objects, created once on startup
@@ -66,8 +64,7 @@ public class IngestionRunner {
      */
     @Async
     public void ingest(Long docId, String taskId, String fileName, String category) {
-        redisTemplate.opsForValue().set(
-                CacheConstant.INGEST_TASK_PREFIX + taskId, IngestionStatus.PROCESSING.name());
+        redisCacheService.setIngestionStatus(taskId, IngestionStatus.PROCESSING.name());
         Path filePath = Path.of(ragProperties.getUpload().getDir(), taskId);
 
         try {
@@ -83,15 +80,17 @@ public class IngestionRunner {
                     splitter.split(dev.langchain4j.data.document.Document.from(text));
 
             // 4. Attach retrieval metadata so we can show sources in chat responses
-            List<TextSegment> segments = rawSegments.stream()
-                    .map(seg -> {
-                        Metadata meta = new Metadata();
-                        meta.put("docId", String.valueOf(docId));
-                        meta.put("fileName", fileName);
-                        meta.put("category", category);
-                        return TextSegment.from(seg.text(), meta);
-                    })
-                    .collect(Collectors.toList());
+            // chunkIndex is stored so the chat service can expand hits to adjacent chunks
+            List<TextSegment> segments = new java.util.ArrayList<>();
+            for (int i = 0; i < rawSegments.size(); i++) {
+                Metadata meta = new Metadata();
+                meta.put("docId", String.valueOf(docId));
+                meta.put("fileName", fileName);
+                meta.put("category", category);
+                meta.put("chunkIndex", String.valueOf(i));
+                meta.put("chunkTotal", String.valueOf(rawSegments.size()));
+                segments.add(TextSegment.from(rawSegments.get(i).text(), meta));
+            }
 
             // 5. 💰 Call OpenAI — cost = tokens × $0.02/1M
             List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
@@ -100,8 +99,7 @@ public class IngestionRunner {
             embeddingStore.addAll(embeddings, segments);
 
             // 7. Mark done
-            redisTemplate.opsForValue().set(
-                    CacheConstant.INGEST_TASK_PREFIX + taskId, IngestionStatus.COMPLETED.name());
+            redisCacheService.setIngestionStatus(taskId, IngestionStatus.COMPLETED.name());
             documentMapper.updateIngestionResult(
                     docId, IngestionStatus.COMPLETED.name(), segments.size(), null);
             log.info("Ingestion completed: docId={}, chunks={}", docId, segments.size());
@@ -111,8 +109,7 @@ public class IngestionRunner {
 
         } catch (Exception e) {
             log.error("Ingestion failed for docId={}", docId, e);
-            redisTemplate.opsForValue().set(
-                    CacheConstant.INGEST_TASK_PREFIX + taskId, IngestionStatus.FAILED.name());
+            redisCacheService.setIngestionStatus(taskId, IngestionStatus.FAILED.name());
             documentMapper.updateIngestionResult(
                     docId, IngestionStatus.FAILED.name(), 0, e.getMessage());
             // Keep temp file on disk so a retry job can re-process without re-upload

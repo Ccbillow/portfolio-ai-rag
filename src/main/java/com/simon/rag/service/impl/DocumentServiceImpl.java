@@ -1,7 +1,6 @@
 package com.simon.rag.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.simon.rag.comm.constant.CacheConstant;
 import com.simon.rag.comm.enums.IngestionStatus;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
@@ -12,7 +11,6 @@ import com.simon.rag.service.DocumentService;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -21,7 +19,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -30,7 +27,7 @@ import java.util.stream.Collectors;
 public class DocumentServiceImpl implements DocumentService {
 
     private final DocumentMapper documentMapper;
-    private final StringRedisTemplate redisTemplate;
+    private final RedisCacheService redisCacheService;
     private final IngestionRunner ingestionRunner;
     private final RagProperties ragProperties;
 
@@ -88,9 +85,7 @@ public class DocumentServiceImpl implements DocumentService {
                 .setUploadedBy(uploadedBy);
         documentMapper.insert(doc);
 
-        redisTemplate.opsForValue().set(
-                CacheConstant.INGEST_TASK_PREFIX + taskId,
-                IngestionStatus.PENDING.name(), 24, TimeUnit.HOURS);
+        redisCacheService.setIngestionStatus(taskId, IngestionStatus.PENDING.name(), 24);
 
         ingestionRunner.ingest(doc.getId(), taskId, fileName, request.getCategory());
 
@@ -106,7 +101,7 @@ public class DocumentServiceImpl implements DocumentService {
     @Override
     public Vos.IngestTaskResponse getTaskStatus(String taskId) {
         // Primary source: Redis (fast)
-        String status = redisTemplate.opsForValue().get(CacheConstant.INGEST_TASK_PREFIX + taskId);
+        String status = redisCacheService.getIngestionStatus(taskId);
 
         // Fallback: MySQL — covers Redis restart / TTL expiry
         if (status == null) {

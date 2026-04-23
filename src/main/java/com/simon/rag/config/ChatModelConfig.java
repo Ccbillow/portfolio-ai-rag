@@ -17,7 +17,7 @@ public class ChatModelConfig {
     public ChatLanguageModel claudeChatModel(
             @Value("${langchain4j.anthropic.api-key}") String apiKey,
             @Value("${langchain4j.anthropic.chat-model-name}") String modelName,
-            @Value("${langchain4j.anthropic.max-tokens:512}") int maxTokens) {
+            @Value("${langchain4j.anthropic.max-tokens:180}") int maxTokens) {
 
         log.info("ChatLanguageModel → Claude [{}]", modelName);
         return AnthropicChatModel.builder()
@@ -31,7 +31,7 @@ public class ChatModelConfig {
     public StreamingChatLanguageModel claudeStreamingChatModel(
             @Value("${langchain4j.anthropic.api-key}") String apiKey,
             @Value("${langchain4j.anthropic.chat-model-name}") String modelName,
-            @Value("${langchain4j.anthropic.max-tokens:512}") int maxTokens) {
+            @Value("${langchain4j.anthropic.max-tokens:180}") int maxTokens) {
 
         log.info("StreamingChatLanguageModel → Claude [{}]", modelName);
         return AnthropicStreamingChatModel.builder()

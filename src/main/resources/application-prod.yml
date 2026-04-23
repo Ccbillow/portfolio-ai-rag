@@ -38,7 +38,7 @@ langchain4j:
   anthropic:
     api-key: ${ANTHROPIC_API_KEY}
     chat-model-name: claude-haiku-4-5-20251001
-    max-tokens: 512
+    max-tokens: 180
 
 qdrant:
   host: ${QDRANT_HOST:qdrant}

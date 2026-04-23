@@ -48,11 +48,14 @@ knife4j:
 rag:
   embedding:
     chunk-size: 512
-    chunk-overlap: 50
-    top-k: 3
-    min-score: 0.3
+    chunk-overlap: 60
+    top-k: 4
+    min-score: 0.25
   upload:
     dir: ${RAG_UPLOAD_DIR:/tmp/rag-uploads}
+  cache:
+    enabled: false   # enable in production after Phase 5 search quality is finalized
+    ttl-hours: 24
 
 logging:
   level:

@@ -11,6 +11,7 @@ public class RagProperties {
 
     private Upload upload = new Upload();
     private Embedding embedding = new Embedding();
+    private Cache cache = new Cache();
 
     @Data
     public static class Upload {
@@ -20,8 +21,15 @@ public class RagProperties {
     @Data
     public static class Embedding {
         private int chunkSize = 512;
-        private int chunkOverlap = 50;
+        private int chunkOverlap = 60;
         private int topK = 3;
         private double minScore = 0.3;
+    }
+
+    @Data
+    public static class Cache {
+        /** Disabled by default — enable in production after all algorithm changes are finalized */
+        private boolean enabled = false;
+        private int ttlHours = 24;
     }
 }
