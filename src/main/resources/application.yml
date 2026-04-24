@@ -62,6 +62,8 @@ rag:
     dir: ${RAG_UPLOAD_DIR:/tmp/rag-uploads}
   cache:
     enabled: false   # enable in production after Phase 5 search quality is finalized
+  hybrid-search:
+    enabled: true
   reranker:
     enabled: true
     candidate-k: 10

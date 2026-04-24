@@ -40,6 +40,7 @@ public class ChatServiceImpl implements ChatService {
     private final MultiQueryExpander multiQueryExpander;
     private final RedisCacheService redisCacheService;
     private final CohereRerankService cohereRerankService;
+    private final SparseVectorizer sparseVectorizer;
 
     @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
     private String modelName;
@@ -166,21 +167,37 @@ public class ChatServiceImpl implements ChatService {
     // ----------------------------------------------------------------
 
     /**
-     * Full retrieval pipeline: multi-query → Qdrant → optional Cohere rerank → expand neighbors.
-     * With reranker: fetch candidateK, rerank to topN, then expand.
-     * Without reranker: fetch topK, expand directly.
+     * Full retrieval pipeline:
+     * - Hybrid ON : single hybrid search (dense+BM25 via RRF) with larger candidate pool
+     * - Hybrid OFF: multi-query dense search (original behavior)
+     * Both paths optionally feed into Cohere Reranker, then expand neighbors.
      */
     private List<SearchHit> retrieve(String question, List<String> queries, RagProperties.Embedding cfg) {
         RagProperties.Reranker rerankCfg = ragProperties.getReranker();
+        boolean useHybrid = ragProperties.getHybridSearch().isEnabled();
+        int fetchLimit = rerankCfg.isEnabled() ? rerankCfg.getCandidateK() : cfg.getTopK();
 
-        if (rerankCfg.isEnabled()) {
-            List<SearchHit> candidates = multiSearch(queries, cfg, rerankCfg.getCandidateK());
-            if (candidates.isEmpty()) return List.of();
-            List<SearchHit> reranked = cohereRerankService.rerank(question, candidates);
-            return expandWithNeighbours(reranked);
+        List<SearchHit> candidates;
+        if (useHybrid) {
+            float[] dense = embedQuestion(question);
+            SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(question);
+            if (sparse.isEmpty()) {
+                log.warn("Sparse vector empty for query '{}', falling back to dense search", question);
+                candidates = multiSearch(queries, cfg, fetchLimit);
+            } else {
+                candidates = qdrantSearchService.hybridSearch(dense, sparse, fetchLimit);
+            }
         } else {
-            return expandWithNeighbours(multiSearch(queries, cfg, cfg.getTopK()));
+            candidates = multiSearch(queries, cfg, fetchLimit);
         }
+
+        if (candidates.isEmpty()) return List.of();
+
+        List<SearchHit> ranked = rerankCfg.isEnabled()
+                ? cohereRerankService.rerank(question, candidates)
+                : candidates;
+
+        return expandWithNeighbours(ranked);
     }
 
     /**

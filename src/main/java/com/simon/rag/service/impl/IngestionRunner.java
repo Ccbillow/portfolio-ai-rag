@@ -3,12 +3,12 @@ package com.simon.rag.service.impl;
 import com.simon.rag.comm.enums.IngestionStatus;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
+import com.simon.rag.service.impl.SparseVectorizer.SparseVector;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.document.splitter.DocumentByCharacterSplitter;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
-import dev.langchain4j.store.embedding.EmbeddingStore;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,19 +19,17 @@ import org.springframework.stereotype.Service;
 import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Map;
+import java.util.UUID;
 
 /**
- * Separate @Service so that @Async proxying works correctly.
- * DocumentServiceImpl calls this bean — Spring routes through the proxy,
- * and the method executes on a background thread from the task executor pool.
+ * Async document ingestion: parse → chunk → embed (dense + sparse) → upsert to Qdrant.
  *
- * Design note — why save to disk first?
- *   The HTTP request (and MultipartFile bytes) ends before the async thread runs.
- *   Persisting to disk decouples the file lifetime from the HTTP lifecycle,
- *   and also enables restart-recovery: a scanner can find PENDING records in MySQL
- *   and re-trigger ingestion by reading from uploadDir/{taskId}.
+ * Uses QdrantSearchService.upsertPoints() directly (not LangChain4j EmbeddingStore)
+ * so we can store both named dense vectors and BM25 sparse vectors in the same point.
  */
 @Slf4j
 @Service
@@ -39,12 +37,12 @@ import java.util.stream.Collectors;
 public class IngestionRunner {
 
     private final EmbeddingModel embeddingModel;
-    private final EmbeddingStore<TextSegment> embeddingStore;
+    private final QdrantSearchService qdrantSearchService;
+    private final SparseVectorizer sparseVectorizer;
     private final DocumentMapper documentMapper;
     private final RedisCacheService redisCacheService;
     private final RagProperties ragProperties;
 
-    // Singletons — heavyweight objects, created once on startup
     private final Tika tika = new Tika();
     private DocumentByCharacterSplitter splitter;
 
@@ -56,22 +54,16 @@ public class IngestionRunner {
                 cfg.getChunkSize(), cfg.getChunkOverlap());
     }
 
-    /**
-     * @param docId    MySQL row id for status updates
-     * @param taskId   also the filename under uploadDir — used for restart recovery
-     * @param fileName original filename (for Qdrant payload / logging)
-     * @param category knowledge category stored in Qdrant payload
-     */
     @Async
     public void ingest(Long docId, String taskId, String fileName, String category) {
         redisCacheService.setIngestionStatus(taskId, IngestionStatus.PROCESSING.name());
         Path filePath = Path.of(ragProperties.getUpload().getDir(), taskId);
 
         try {
-            // 1. Read file from disk (saved by upload() before this thread started)
+            // 1. Read file from disk
             byte[] fileBytes = Files.readAllBytes(filePath);
 
-            // 2. Parse to plain text (auto-detects PDF / DOCX / TXT / HTML)
+            // 2. Parse to plain text
             String text = tika.parseToString(new ByteArrayInputStream(fileBytes));
             log.info("Tika parsed {} chars from '{}'", text.length(), fileName);
 
@@ -79,9 +71,8 @@ public class IngestionRunner {
             List<TextSegment> rawSegments =
                     splitter.split(dev.langchain4j.data.document.Document.from(text));
 
-            // 4. Attach retrieval metadata so we can show sources in chat responses
-            // chunkIndex is stored so the chat service can expand hits to adjacent chunks
-            List<TextSegment> segments = new java.util.ArrayList<>();
+            // 4. Attach metadata
+            List<TextSegment> segments = new ArrayList<>();
             for (int i = 0; i < rawSegments.size(); i++) {
                 Metadata meta = new Metadata();
                 meta.put("docId", String.valueOf(docId));
@@ -92,19 +83,45 @@ public class IngestionRunner {
                 segments.add(TextSegment.from(rawSegments.get(i).text(), meta));
             }
 
-            // 5. 💰 Call OpenAI — cost = tokens × $0.02/1M
+            // 5. Compute dense embeddings (OpenAI)
             List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
 
-            // 6. Store vectors + payloads in Qdrant
-            embeddingStore.addAll(embeddings, segments);
+            // 6. Build Qdrant points with dense + sparse vectors
+            List<QdrantSearchService.PointData> points = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                TextSegment seg = segments.get(i);
+                float[] dense = embeddings.get(i).vector();
+                SparseVector sparse = sparseVectorizer.vectorize(seg.text());
 
-            // 7. Mark done
+                Map<String, Object> vectors = new LinkedHashMap<>();
+                vectors.put("dense", dense);
+                if (!sparse.isEmpty()) {
+                    vectors.put("sparse",
+                            Map.of("indices", sparse.indices(), "values", sparse.values()));
+                }
+
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("text_segment", seg.text());
+                Metadata meta = seg.metadata();
+                payload.put("docId",       meta.getString("docId"));
+                payload.put("fileName",    meta.getString("fileName"));
+                payload.put("category",    meta.getString("category"));
+                payload.put("chunkIndex",  meta.getString("chunkIndex"));
+                payload.put("chunkTotal",  meta.getString("chunkTotal"));
+
+                points.add(new QdrantSearchService.PointData(
+                        UUID.randomUUID().toString(), vectors, payload));
+            }
+
+            // 7. Upsert to Qdrant
+            qdrantSearchService.upsertPoints(points);
+
+            // 8. Mark done
             redisCacheService.setIngestionStatus(taskId, IngestionStatus.COMPLETED.name());
             documentMapper.updateIngestionResult(
                     docId, IngestionStatus.COMPLETED.name(), segments.size(), null);
             log.info("Ingestion completed: docId={}, chunks={}", docId, segments.size());
 
-            // 8. Clean up temp file — no longer needed after vectors are in Qdrant
             Files.deleteIfExists(filePath);
 
         } catch (Exception e) {
@@ -112,7 +129,6 @@ public class IngestionRunner {
             redisCacheService.setIngestionStatus(taskId, IngestionStatus.FAILED.name());
             documentMapper.updateIngestionResult(
                     docId, IngestionStatus.FAILED.name(), 0, e.getMessage());
-            // Keep temp file on disk so a retry job can re-process without re-upload
         }
     }
 }

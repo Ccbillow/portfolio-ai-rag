@@ -13,6 +13,7 @@ public class RagProperties {
     private Embedding embedding = new Embedding();
     private Cache cache = new Cache();
     private Reranker reranker = new Reranker();
+    private HybridSearch hybridSearch = new HybridSearch();
 
     @Data
     public static class Upload {
@@ -32,6 +33,11 @@ public class RagProperties {
         /** Disabled by default — enable in production after all algorithm changes are finalized */
         private boolean enabled = false;
         private int ttlHours = 24;
+    }
+
+    @Data
+    public static class HybridSearch {
+        private boolean enabled = true;
     }
 
     @Data

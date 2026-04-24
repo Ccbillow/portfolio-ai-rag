@@ -1,8 +1,5 @@
 package com.simon.rag.config;
 
-import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.store.embedding.EmbeddingStore;
-import dev.langchain4j.store.embedding.qdrant.QdrantEmbeddingStore;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -19,9 +16,6 @@ public class QdrantConfig {
 
     @Value("${qdrant.host}")
     private String host;
-
-    @Value("${qdrant.port:6334}")
-    private int grpcPort;
 
     @Value("${qdrant.http-port:6333}")
     private int httpPort;
@@ -47,20 +41,6 @@ public class QdrantConfig {
         return client;
     }
 
-    /** EmbeddingStore for IngestionRunner.addAll() — langchain4j handles writes via gRPC */
-    @Bean
-    public EmbeddingStore<TextSegment> qdrantEmbeddingStore() {
-        QdrantEmbeddingStore.Builder builder = QdrantEmbeddingStore.builder()
-                .host(host)
-                .port(grpcPort)
-                .collectionName(collectionName);
-        if (apiKey != null && !apiKey.isBlank()) {
-            builder.apiKey(apiKey);
-        }
-        log.info("EmbeddingStore → Qdrant [{}] grpc://{}:{}", collectionName, host, grpcPort);
-        return builder.build();
-    }
-
     private void ensureCollectionExists(WebClient client) {
         try {
             client.get()
@@ -77,11 +57,17 @@ public class QdrantConfig {
         }
     }
 
+    /**
+     * Named "dense" vector (1536-dim Cosine) + "sparse" BM25 sparse vector.
+     * Hybrid search via Qdrant Query API with RRF fusion requires named vectors.
+     */
     private void createCollection(WebClient client) {
         Map<String, Object> body = Map.of(
                 "vectors", Map.of(
-                        "size", vectorSize,
-                        "distance", "Cosine"
+                        "dense", Map.of("size", vectorSize, "distance", "Cosine")
+                ),
+                "sparse_vectors", Map.of(
+                        "sparse", Map.of()
                 )
         );
         try {
@@ -92,7 +78,7 @@ public class QdrantConfig {
                     .retrieve()
                     .toBodilessEntity()
                     .block();
-            log.info("Created Qdrant collection '{}' (dim={}, distance=Cosine)", collectionName, vectorSize);
+            log.info("Created Qdrant collection '{}' (dense={}d Cosine + sparse BM25)", collectionName, vectorSize);
         } catch (Exception e) {
             log.error("Failed to create Qdrant collection '{}': {}", collectionName, e.getMessage());
             throw new IllegalStateException("Qdrant collection creation failed — check Qdrant is running", e);
