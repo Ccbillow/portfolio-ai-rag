@@ -12,6 +12,7 @@ public class RagProperties {
     private Upload upload = new Upload();
     private Embedding embedding = new Embedding();
     private Cache cache = new Cache();
+    private Reranker reranker = new Reranker();
 
     @Data
     public static class Upload {
@@ -31,5 +32,15 @@ public class RagProperties {
         /** Disabled by default — enable in production after all algorithm changes are finalized */
         private boolean enabled = false;
         private int ttlHours = 24;
+    }
+
+    @Data
+    public static class Reranker {
+        private boolean enabled = true;
+        /** Candidates fetched from Qdrant before reranking */
+        private int candidateK = 10;
+        /** Final chunks kept after reranking, fed to LLM */
+        private int topN = 3;
+        private String model = "rerank-v3.5";
     }
 }

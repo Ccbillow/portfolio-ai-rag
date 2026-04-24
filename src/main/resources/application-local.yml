@@ -31,6 +31,9 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
+cohere:
+  api-key: ${COHERE_API_KEY}
+
 langchain4j:
   open-ai:
     api-key: ${OPENAI_API_KEY}

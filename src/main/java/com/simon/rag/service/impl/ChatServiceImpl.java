@@ -39,6 +39,7 @@ public class ChatServiceImpl implements ChatService {
     private final PromptBuilder promptBuilder;
     private final MultiQueryExpander multiQueryExpander;
     private final RedisCacheService redisCacheService;
+    private final CohereRerankService cohereRerankService;
 
     @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
     private String modelName;
@@ -62,9 +63,9 @@ public class ChatServiceImpl implements ChatService {
             if (cached != null) return cached;
         }
 
-        // 2. Multi-query: expand to 3 phrasings → embed each → search → merge
+        // 2. Multi-query (3) → Qdrant → (Rerank) → expand neighbors
         List<String> queries = multiQueryExpander.expand(request.getQuestion());
-        List<SearchHit> hits = expandWithNeighbours(multiSearch(queries, cfg));
+        List<SearchHit> hits = retrieve(request.getQuestion(), queries, cfg);
 
         if (hits.isEmpty()) {
             return Vos.ChatResponse.builder()
@@ -108,8 +109,8 @@ public class ChatServiceImpl implements ChatService {
 
             // Multi-query retrieval (same as sync path, no cache for streaming)
             List<String> queries = multiQueryExpander.expand(request.getQuestion());
-            List<SearchHit> hits = expandWithNeighbours(multiSearch(queries, cfg));
-            log.info("Stream — {} hits after multi-query + expansion", hits.size());
+            List<SearchHit> hits = retrieve(request.getQuestion(), queries, cfg);
+            log.info("Stream — {} hits after retrieval pipeline", hits.size());
 
             if (hits.isEmpty()) {
                 emitter.send(SseEmitter.event().name("message")
@@ -161,23 +162,41 @@ public class ChatServiceImpl implements ChatService {
     }
 
     // ----------------------------------------------------------------
-    //  Retrieval helpers
+    //  Retrieval pipeline
     // ----------------------------------------------------------------
 
     /**
-     * Embeds each query, searches Qdrant, merges results by (docId, chunkIndex).
-     * First occurrence wins (highest score), final list sorted by score desc, capped at topK.
+     * Full retrieval pipeline: multi-query → Qdrant → optional Cohere rerank → expand neighbors.
+     * With reranker: fetch candidateK, rerank to topN, then expand.
+     * Without reranker: fetch topK, expand directly.
      */
-    private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg) {
+    private List<SearchHit> retrieve(String question, List<String> queries, RagProperties.Embedding cfg) {
+        RagProperties.Reranker rerankCfg = ragProperties.getReranker();
+
+        if (rerankCfg.isEnabled()) {
+            List<SearchHit> candidates = multiSearch(queries, cfg, rerankCfg.getCandidateK());
+            if (candidates.isEmpty()) return List.of();
+            List<SearchHit> reranked = cohereRerankService.rerank(question, candidates);
+            return expandWithNeighbours(reranked);
+        } else {
+            return expandWithNeighbours(multiSearch(queries, cfg, cfg.getTopK()));
+        }
+    }
+
+    /**
+     * Embeds each query, searches Qdrant, merges by (docId:chunkIndex).
+     * First occurrence wins (highest score), sorted desc, capped at limit.
+     */
+    private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg, int limit) {
         LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
         for (String query : queries) {
             float[] vector = embedQuestion(query);
-            qdrantSearchService.search(vector, cfg.getTopK(), cfg.getMinScore())
+            qdrantSearchService.search(vector, limit, cfg.getMinScore())
                     .forEach(hit -> seen.putIfAbsent(hit.docId() + ":" + hit.chunkIndex(), hit));
         }
         return seen.values().stream()
                 .sorted(Comparator.comparingDouble(SearchHit::score).reversed())
-                .limit(cfg.getTopK())
+                .limit(limit)
                 .collect(Collectors.toList());
     }
 
