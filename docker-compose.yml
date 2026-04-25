@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ================================================================
 # Local development stack — starts all 4 services with one command:
 #   docker-compose up -d
@@ -35,6 +33,7 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/mysql/conf/my.cnf:/etc/mysql/conf.d/my.cnf:ro
     networks:
       - rag-net
     healthcheck:
