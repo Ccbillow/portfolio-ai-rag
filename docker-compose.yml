@@ -70,7 +70,7 @@ services:
   # Qdrant — vector database (hybrid search built-in)
   # ------------------------------------------------------------
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.13.6
     container_name: rag-qdrant
     restart: unless-stopped
     ports:

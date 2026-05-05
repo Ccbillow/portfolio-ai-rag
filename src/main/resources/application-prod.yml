@@ -48,8 +48,15 @@ qdrant:
   vector-size: 1536
   api-key: ${QDRANT_API_KEY:}
 
+cohere:
+  api-key: ${COHERE_API_KEY:}
+
+rag:
+  cache:
+    enabled: true
+
 cors:
-  allowed-origins: "https://ccbillow.github.io"
+  allowed-origins: "${CORS_ALLOWED_ORIGINS:https://ccbillow.github.io}"
 
 logging:
   level:
