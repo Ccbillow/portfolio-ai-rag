@@ -56,6 +56,7 @@ public class SecurityConfig {
                 .requestMatchers("/actuator/health").permitAll()
                 // Admin only — must be authenticated with ROLE_ADMIN
                 .requestMatchers("/api/documents/**").hasRole("ADMIN")
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
             .exceptionHandling(ex -> ex

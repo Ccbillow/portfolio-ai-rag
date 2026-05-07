@@ -45,4 +45,11 @@ public final class Dtos {
         @Size(max = 500, message = "Description must not exceed 500 characters")
         private String description;
     }
+
+    @Data
+    public static class UpdatePromptRequest {
+
+        @NotBlank(message = "Content must not be blank")
+        private String content;
+    }
 }

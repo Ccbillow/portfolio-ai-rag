@@ -5,6 +5,7 @@ import lombok.Data;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 public final class Vos {
 
@@ -60,5 +61,16 @@ public final class Vos {
         private String status;    // PENDING | PROCESSING | COMPLETED | FAILED
         private int progress;     // 0-100
         private String message;
+    }
+
+    @Data
+    @Builder
+    public static class PromptTemplateVo {
+        private Long id;
+        private String name;
+        private String content;
+        private String description;
+        private Integer version;
+        private LocalDateTime updatedAt;
     }
 }
