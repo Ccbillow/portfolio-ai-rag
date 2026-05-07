@@ -76,7 +76,7 @@ Answer:',
 1),
 
 ('type_hint_behavioral',
-'LENGTH: max 3 sentences. Follow Problem → Action → Result order implicitly.',
+'LENGTH: max 3 sentences, one per line. Order: context → action → result. Do NOT output STAR labels.',
 'Type hint for behavioral/STAR questions (default)',
 1),
 
