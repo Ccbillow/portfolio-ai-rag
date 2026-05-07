@@ -9,4 +9,7 @@ public final class CacheConstant {
 
     /** Chat answer cache — keyed by MD5(question), disabled until production */
     public static final String CHAT_CACHE_PREFIX = "rag:chat:cache:";
+
+    /** Conversation history per sessionId — Redis List, max 3 turns, TTL 30 min */
+    public static final String CONVERSATION_HISTORY_PREFIX = "rag:chat:history:";
 }

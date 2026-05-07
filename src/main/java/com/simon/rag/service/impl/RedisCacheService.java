@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -50,6 +51,39 @@ public class RedisCacheService {
                     ragProperties.getCache().getTtlHours(), TimeUnit.HOURS);
         } catch (Exception e) {
             log.warn("Cache write failed: {}", e.getMessage());
+        }
+    }
+
+    // ----------------------------------------------------------------
+    //  Conversation history (context tracking per sessionId)
+    // ----------------------------------------------------------------
+
+    private static final int  MAX_TURNS       = 3;
+    private static final long HISTORY_TTL_MIN = 30;
+
+    public String getConversationHistory(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return "";
+        try {
+            String key = CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId;
+            List<String> turns = redisTemplate.opsForList().range(key, 0, -1);
+            if (turns == null || turns.isEmpty()) return "";
+            return String.join("\n\n", turns);
+        } catch (Exception e) {
+            log.warn("History read failed: sessionId={}, err={}", sessionId, e.getMessage());
+            return "";
+        }
+    }
+
+    public void appendConversationHistory(String sessionId, String question, String answer) {
+        if (sessionId == null || sessionId.isBlank()) return;
+        try {
+            String key   = CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId;
+            String entry = "Q: " + question.strip() + "\nA: " + answer.strip();
+            redisTemplate.opsForList().rightPush(key, entry);
+            redisTemplate.opsForList().trim(key, -MAX_TURNS, -1);
+            redisTemplate.expire(key, HISTORY_TTL_MIN, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            log.warn("History write failed: sessionId={}, err={}", sessionId, e.getMessage());
         }
     }
 

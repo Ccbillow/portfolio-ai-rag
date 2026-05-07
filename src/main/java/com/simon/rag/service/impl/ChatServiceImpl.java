@@ -41,6 +41,7 @@ public class ChatServiceImpl implements ChatService {
     private final RedisCacheService redisCacheService;
     private final CohereRerankService cohereRerankService;
     private final SparseVectorizer sparseVectorizer;
+    private final QuestionClassifier questionClassifier;
 
     @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
     private String modelName;
@@ -54,6 +55,19 @@ public class ChatServiceImpl implements ChatService {
         long start = System.currentTimeMillis();
         log.info("RAG ask: '{}'", request.getQuestion());
 
+        // 0. Agent Gate — classify before any pipeline cost
+        QuestionType questionType = questionClassifier.classify(request.getQuestion());
+        String earlyReturn = questionClassifier.earlyReturnMessage(questionType, request.getQuestion());
+        if (earlyReturn != null) {
+            log.info("Agent gate early return: type={}", questionType);
+            return Vos.ChatResponse.builder()
+                    .answer(earlyReturn)
+                    .sources(List.of())
+                    .modelUsed("rule-based")
+                    .latencyMs(System.currentTimeMillis() - start)
+                    .build();
+        }
+
         RagProperties.Embedding cfg = ragProperties.getEmbedding();
 
         // 1. Cache check — disabled until production (rag.cache.enabled: false)
@@ -64,9 +78,11 @@ public class ChatServiceImpl implements ChatService {
             if (cached != null) return cached;
         }
 
-        // 2. Multi-query (3) → Qdrant → (Rerank) → expand neighbors
-        List<String> queries = multiQueryExpander.expand(request.getQuestion());
-        List<SearchHit> hits = retrieve(request.getQuestion(), queries, cfg);
+        // 2. Load history → resolve retrieval query → Multi-query → Qdrant → (Rerank) → expand
+        String history        = redisCacheService.getConversationHistory(request.getSessionId());
+        String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
+        List<String> queries  = multiQueryExpander.expand(retrievalQuery);
+        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg);
 
         if (hits.isEmpty()) {
             return Vos.ChatResponse.builder()
@@ -78,10 +94,13 @@ public class ChatServiceImpl implements ChatService {
                     .build();
         }
 
-        // 3. Build context and call Claude
+        // 3. Build context and call Claude (prompt always uses original question + history)
         String context = hits.stream().map(SearchHit::text)
                 .collect(Collectors.joining("\n\n---\n\n"));
-        String answer = chatLanguageModel.generate(promptBuilder.build(request.getQuestion(), context));
+        String answer  = chatLanguageModel.generate(
+                promptBuilder.build(request.getQuestion(), context, questionType, history));
+        redisCacheService.appendConversationHistory(
+                request.getSessionId(), request.getQuestion(), answer);
 
         Vos.ChatResponse response = Vos.ChatResponse.builder()
                 .answer(answer)
@@ -106,11 +125,24 @@ public class ChatServiceImpl implements ChatService {
     public SseEmitter askStream(Dtos.ChatRequest request, Long userId) {
         SseEmitter emitter = new SseEmitter(60_000L);
         try {
+            // 0. Agent Gate
+            QuestionType questionType = questionClassifier.classify(request.getQuestion());
+            String earlyReturn = questionClassifier.earlyReturnMessage(questionType, request.getQuestion());
+            if (earlyReturn != null) {
+                log.info("Agent gate early return (stream): type={}", questionType);
+                emitter.send(SseEmitter.event().name("message").data(earlyReturn));
+                emitter.send(SseEmitter.event().name("done").data("[DONE]"));
+                emitter.complete();
+                return emitter;
+            }
+
             RagProperties.Embedding cfg = ragProperties.getEmbedding();
 
-            // Multi-query retrieval (same as sync path, no cache for streaming)
-            List<String> queries = multiQueryExpander.expand(request.getQuestion());
-            List<SearchHit> hits = retrieve(request.getQuestion(), queries, cfg);
+            // Load history → resolve retrieval query → Multi-query retrieval
+            String history        = redisCacheService.getConversationHistory(request.getSessionId());
+            String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
+            List<String> queries  = multiQueryExpander.expand(retrievalQuery);
+            List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg);
             log.info("Stream — {} hits after retrieval pipeline", hits.size());
 
             if (hits.isEmpty()) {
@@ -123,14 +155,19 @@ public class ChatServiceImpl implements ChatService {
 
             emitter.send(SseEmitter.event().name("sources").data(toSources(hits)));
 
-            String context = hits.stream().map(SearchHit::text)
+            String context   = hits.stream().map(SearchHit::text)
                     .collect(Collectors.joining("\n\n---\n\n"));
+            String question  = request.getQuestion();
+            String sessionId = request.getSessionId();
 
             streamingChatLanguageModel.generate(
-                    promptBuilder.build(request.getQuestion(), context),
+                    promptBuilder.build(question, context, questionType, history),
                     new StreamingResponseHandler<AiMessage>() {
+                        private final StringBuilder fullAnswer = new StringBuilder();
+
                         @Override
                         public void onNext(String token) {
+                            fullAnswer.append(token);
                             try {
                                 emitter.send(SseEmitter.event().name("message").data(token));
                             } catch (Exception e) {
@@ -140,6 +177,8 @@ public class ChatServiceImpl implements ChatService {
 
                         @Override
                         public void onComplete(Response<AiMessage> response) {
+                            redisCacheService.appendConversationHistory(
+                                    sessionId, question, fullAnswer.toString());
                             try {
                                 emitter.send(SseEmitter.event().name("done").data("[DONE]"));
                                 emitter.complete();
@@ -242,6 +281,48 @@ public class ChatServiceImpl implements ChatService {
     // ----------------------------------------------------------------
     //  Other helpers
     // ----------------------------------------------------------------
+
+    /**
+     * When a follow-up question contains ambiguous pronouns (it/that/there/this/they/those),
+     * prefix the retrieval query with the last answer snippet from history.
+     *
+     * Why answer, not question:
+     *   The answer contains concrete entities (company names, system names, tech terms)
+     *   that anchor the embedding to the right topic far better than the vague Q.
+     *
+     * Example:
+     *   history last A → "Insurance Portal System at Sinosig. Used Redis to cache credit checks..."
+     *   question       → "How did you reduce cost in that system?"
+     *   resolved       → "Insurance Portal System at Sinosig. Used Redis to cache credit checks...
+     *                     How did you reduce cost in that system?"
+     */
+    private String resolveRetrievalQuery(String question, String history) {
+        if (history == null || history.isBlank()) return question;
+
+        String lower = question.toLowerCase();
+        boolean hasAmbiguity =
+                lower.matches(".*(\\bit\\b|\\bthat\\b|\\bthere\\b|\\bthis\\b|\\bthey\\b|\\bthose\\b).*");
+        if (!hasAmbiguity) return question;
+
+        // Extract last Q and A from history
+        String lastQuestion = "";
+        String lastAnswer   = "";
+        for (String line : history.split("\n")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("Q: ")) lastQuestion = trimmed.substring(3).strip();
+            else if (trimmed.startsWith("A: ")) lastAnswer = trimmed.substring(3).strip();
+        }
+
+        // Prefer answer snippet — richer in concrete entities; fall back to last question
+        String context = !lastAnswer.isBlank()
+                ? lastAnswer.substring(0, Math.min(120, lastAnswer.length()))
+                : lastQuestion;
+
+        if (context.isBlank()) return question;
+
+        log.debug("Retrieval resolved — context: '{}' | question: '{}'", context, question);
+        return context + " " + question;
+    }
 
     private float[] embedQuestion(String question) {
         return embeddingModel
