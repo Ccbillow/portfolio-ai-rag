@@ -94,7 +94,7 @@ public class ChatServiceImpl implements ChatService {
         String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
         String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
         List<String> queries  = multiQueryExpander.expand(retrievalQuery);
-        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, focusCompany);
+        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, toFilterCompany(focusCompany));
 
         if (hits.isEmpty()) {
             return Vos.ChatResponse.builder()
@@ -178,7 +178,7 @@ public class ChatServiceImpl implements ChatService {
             String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
             String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
             List<String> queries  = multiQueryExpander.expand(retrievalQuery);
-            List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, focusCompany);
+            List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, toFilterCompany(focusCompany));
             log.info("Stream — {} hits after retrieval pipeline", hits.size());
 
             if (hits.isEmpty()) {
@@ -378,6 +378,19 @@ public class ChatServiceImpl implements ChatService {
                 .content()
                 .get(0)
                 .vector();
+    }
+
+    /**
+     * Maps client/project names to their employer for Qdrant filtering.
+     * OCBC and Sanofi are Deloitte projects — their documents are tagged "Deloitte".
+     * The prompt still uses the original focusCompany (e.g. "OCBC") for scope instructions.
+     */
+    private String toFilterCompany(String focusCompany) {
+        if (focusCompany == null) return null;
+        return switch (focusCompany) {
+            case "OCBC", "Sanofi" -> "Deloitte";
+            default -> focusCompany;
+        };
     }
 
     private boolean isQuotaError(Throwable e) {

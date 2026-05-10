@@ -141,12 +141,15 @@ public class IngestionRunner {
      */
     private String extractCompany(String fileName) {
         String lower = fileName.toLowerCase();
-        if (lower.contains("ocbc"))     return "OCBC";
-        if (lower.contains("sanofi"))   return "Sanofi";
+        // Employer names checked before client/project names:
+        // "Deloitte_OCBC.docx" → "Deloitte" (correct employer tag)
+        // Stand-alone "OCBC.docx" or "ocbc_project.docx" → "OCBC"
         if (lower.contains("alipay"))   return "Alipay";
         if (lower.contains("sinosig"))  return "Sinosig";
-        if (lower.contains("deloitte")) return "Deloitte";
         if (lower.contains("netease"))  return "NetEase";
+        if (lower.contains("deloitte")) return "Deloitte";
+        if (lower.contains("ocbc"))     return "OCBC";
+        if (lower.contains("sanofi"))   return "Sanofi";
         return null;
     }
 

@@ -47,7 +47,8 @@ use ONLY context passages that explicitly mention that company.
 Ignore content from other companies even if it appears in the Context.{{companyContextHint}}
 
 FALLBACK:
-No relevant context → output exactly: I don''t have that detail in my notes.
+If context has related information, synthesize an answer — do not require the exact phrase.
+Only if context has NO relevant information at all → output exactly: I don''t have that detail in my notes.
 {{historySection}}
 Context:
 {{context}}
@@ -64,7 +65,7 @@ Answer:',
 1),
 
 ('type_hint_technical',
-'LENGTH: max 3 sentences, or a bullet list (3-5 items) if listing components/steps. Include concrete specifics — numbers, tech names, outcomes. Use bullets only when the answer is naturally a list.',
+'LENGTH: max 3 sentences, or a bullet list (3-5 items) if listing components/steps. Include concrete specifics — numbers, tech names, outcomes. Use bullets only when the answer is naturally a list. When covering multiple projects or use cases, separate each with a blank line.',
 'Type hint for technical/architecture questions',
 1),
 
@@ -74,15 +75,15 @@ Answer:',
 1),
 
 ('type_hint_behavioral',
-'LENGTH: up to 5 sentences. Separate each part with a blank line. Order:
+'STRICT LENGTH: 3 sentences only — one per part, no exceptions.
 
-Situation or challenge (1-2 sentences).
+Challenge (1 sentence — core problem, no background).
 
-Action(s) taken (1-2 sentences).
+Action (1 sentence — key decision or solution, be specific).
 
-Result or impact (1 sentence).
+Result (1 sentence — concrete outcome, include numbers if available).
 
-Do NOT output STAR labels.',
+No preamble. No soft language. No transitions. Do NOT output STAR labels.',
 'Type hint for behavioral/STAR questions (default)',
 1),
 

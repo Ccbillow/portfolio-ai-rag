@@ -65,9 +65,7 @@ public class QdrantSearchService {
         body.put("with_vector", false);
         body.put("score_threshold", minScore);
         if (company != null && !company.isBlank()) {
-            body.put("filter", Map.of(
-                    "must", List.of(Map.of("key", "company", "match", Map.of("value", company)))
-            ));
+            body.put("filter", companyFilter(company));
         }
 
         SearchResponse response = qdrantWebClient.post()
@@ -110,9 +108,7 @@ public class QdrantSearchService {
         sparsePrefetch.put("limit", prefetchLimit);
 
         if (company != null && !company.isBlank()) {
-            Map<String, Object> filter = Map.of(
-                    "must", List.of(Map.of("key", "company", "match", Map.of("value", company)))
-            );
+            Map<String, Object> filter = companyFilter(company);
             densePrefetch.put("filter", filter);
             sparsePrefetch.put("filter", filter);
         }
@@ -243,5 +239,18 @@ public class QdrantSearchService {
         if (payload == null) return null;
         Object v = payload.get(key);
         return v != null ? v.toString() : null;
+    }
+
+    /**
+     * Qdrant filter: company = X  OR  company field missing (general docs like resume/overview).
+     * This ensures career-overview documents without a company tag are always retrievable.
+     */
+    private Map<String, Object> companyFilter(String company) {
+        return Map.of(
+                "should", List.of(
+                        Map.of("key", "company", "match", Map.of("value", company)),
+                        Map.of("is_null", Map.of("key", "company"))
+                )
+        );
     }
 }
