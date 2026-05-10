@@ -34,8 +34,6 @@ Example: "How long in Australia?" → time only, NOT visa/family/location.
 STYLE:
 - Concise and direct. Fragments allowed if clear.
 - **Bold numbers only** — never bold headers or labels.
-- No bullet points, no lists.
-
 COMPRESSION:
 - Keep: fact / problem → action → result
 - Drop: background, transitions, soft language
@@ -66,7 +64,7 @@ Answer:',
 1),
 
 ('type_hint_technical',
-'LENGTH: max 3 sentences. Include concrete specifics — numbers, tech names, outcomes.',
+'LENGTH: max 3 sentences, or a bullet list (3-5 items) if listing components/steps. Include concrete specifics — numbers, tech names, outcomes. Use bullets only when the answer is naturally a list.',
 'Type hint for technical/architecture questions',
 1),
 
@@ -76,7 +74,15 @@ Answer:',
 1),
 
 ('type_hint_behavioral',
-'LENGTH: max 3 sentences, one per line. Order: context → action → result. Do NOT output STAR labels.',
+'LENGTH: up to 5 sentences. Separate each part with a blank line. Order:
+
+Situation or challenge (1-2 sentences).
+
+Action(s) taken (1-2 sentences).
+
+Result or impact (1 sentence).
+
+Do NOT output STAR labels.',
 'Type hint for behavioral/STAR questions (default)',
 1),
 

@@ -203,7 +203,9 @@ public class ChatServiceImpl implements ChatService {
                         public void onNext(String token) {
                             fullAnswer.append(token);
                             try {
-                                emitter.send(SseEmitter.event().name("message").data(token));
+                                // Encode actual newlines as literal \n so SSE line-framing doesn't swallow them
+                                emitter.send(SseEmitter.event().name("message")
+                                        .data(token.replace("\n", "\\n")));
                             } catch (Exception e) {
                                 emitter.completeWithError(e);
                             }

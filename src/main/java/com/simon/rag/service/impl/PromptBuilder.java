@@ -27,7 +27,7 @@ public class PromptBuilder {
         };
         String typeHint = promptTemplateService.get(typeHintKey);
 
-        String focusCompany = extractFocusCompany(history);
+        String focusCompany = extractFocusCompany(question, history);
         String companyContextHint = focusCompany != null
                 ? "\nConversation context: the current topic is " + focusCompany + ". " +
                   "Apply COMPANY SCOPE to " + focusCompany + " even when the question uses pronouns (it / that / this / there)."
@@ -44,15 +44,36 @@ public class PromptBuilder {
                 .replace("{{question}}", question);
     }
 
-    private String extractFocusCompany(String history) {
+    private String extractFocusCompany(String question, String history) {
+        // Current question always takes priority
+        String fromQuestion = findCompany(question.toLowerCase());
+        if (fromQuestion != null) return fromQuestion;
+
+        // Only use history when question is ambiguous (pronoun reference)
         if (history == null || history.isBlank()) return null;
-        String lower = history.toLowerCase();
-        if (lower.contains("alipay"))   return "Alipay";
-        if (lower.contains("sinosig"))  return "Sinosig";
-        if (lower.contains("sanofi"))   return "Sanofi";
-        if (lower.contains("ocbc"))     return "OCBC";
-        if (lower.contains("deloitte")) return "Deloitte";
-        if (lower.contains("netease"))  return "NetEase";
+        boolean hasAmbiguity = question.toLowerCase()
+                .matches(".*(\\bit\\b|\\bthat\\b|\\bthere\\b|\\bthis\\b|\\bthey\\b|\\bthose\\b).*");
+        if (!hasAmbiguity) return null;
+
+        // Extract company from the last answer only — not the whole history
+        return findCompany(extractLastAnswer(history).toLowerCase());
+    }
+
+    private String findCompany(String text) {
+        if (text.contains("alipay"))   return "Alipay";
+        if (text.contains("sinosig"))  return "Sinosig";
+        if (text.contains("sanofi"))   return "Sanofi";
+        if (text.contains("ocbc"))     return "OCBC";
+        if (text.contains("deloitte")) return "Deloitte";
+        if (text.contains("netease"))  return "NetEase";
         return null;
+    }
+
+    private String extractLastAnswer(String history) {
+        String last = "";
+        for (String line : history.split("\n")) {
+            if (line.trim().startsWith("A: ")) last = line.trim().substring(3).strip();
+        }
+        return last;
     }
 }
