@@ -19,17 +19,19 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Per-IP rate limiter for chat endpoints using Bucket4j in-process token buckets.
- * Limit: 10 requests per minute per IP.
+ * Limits: 10 requests/minute and 50 requests/day per IP.
+ * Minute limit is checked first to avoid burning daily quota on rapid-fire bursts.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class RateLimitInterceptor implements HandlerInterceptor {
 
-    private static final int CAPACITY = 10;
-    private static final Duration REFILL_PERIOD = Duration.ofMinutes(1);
+    private static final int  MINUTE_CAPACITY = 10;
+    private static final int  DAILY_CAPACITY  = 50;
 
-    private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Bucket> minuteBuckets = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Bucket> dailyBuckets  = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
 
     @Override
@@ -39,28 +41,42 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             @NonNull Object handler) throws Exception {
 
         String ip = resolveClientIp(request);
-        Bucket bucket = buckets.computeIfAbsent(ip, this::newBucket);
 
-        if (bucket.tryConsume(1)) {
-            return true;
+        // Check per-minute limit first — keeps daily quota safe from burst spamming
+        Bucket minute = minuteBuckets.computeIfAbsent(ip,
+                k -> newBucket(MINUTE_CAPACITY, Duration.ofMinutes(1)));
+        if (!minute.tryConsume(1)) {
+            log.warn("Per-minute rate limit exceeded: ip={}, uri={}", ip, request.getRequestURI());
+            writeError(response, ResultCode.RATE_LIMITED);
+            return false;
         }
 
-        log.warn("Rate limit exceeded: ip={}, uri={}", ip, request.getRequestURI());
+        // Then check daily limit
+        Bucket daily = dailyBuckets.computeIfAbsent(ip,
+                k -> newBucket(DAILY_CAPACITY, Duration.ofDays(1)));
+        if (!daily.tryConsume(1)) {
+            log.warn("Daily rate limit exceeded: ip={}, uri={}", ip, request.getRequestURI());
+            writeError(response, ResultCode.DAILY_RATE_LIMITED);
+            return false;
+        }
+
+        return true;
+    }
+
+    private Bucket newBucket(int capacity, Duration period) {
+        return Bucket.builder()
+                .addLimit(Bandwidth.builder()
+                        .capacity(capacity)
+                        .refillGreedy(capacity, period)
+                        .build())
+                .build();
+    }
+
+    private void writeError(HttpServletResponse response, ResultCode code) throws Exception {
         response.setStatus(429);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");
-        response.getWriter().write(
-                objectMapper.writeValueAsString(Result.error(ResultCode.RATE_LIMITED)));
-        return false;
-    }
-
-    private Bucket newBucket(String ip) {
-        return Bucket.builder()
-                .addLimit(Bandwidth.builder()
-                        .capacity(CAPACITY)
-                        .refillGreedy(CAPACITY, REFILL_PERIOD)
-                        .build())
-                .build();
+        response.getWriter().write(objectMapper.writeValueAsString(Result.error(code)));
     }
 
     private String resolveClientIp(HttpServletRequest request) {

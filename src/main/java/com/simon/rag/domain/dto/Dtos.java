@@ -14,7 +14,7 @@ public final class Dtos {
     public static class ChatRequest {
 
         @NotBlank(message = "Question must not be blank")
-        @Size(max = 2000, message = "Question must not exceed 2000 characters")
+        @Size(max = 300, message = "Question must not exceed 300 characters")
         private String question;
 
         /** Optional — filter retrieval to a specific knowledge category */

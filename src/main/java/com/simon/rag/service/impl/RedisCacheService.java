@@ -58,8 +58,9 @@ public class RedisCacheService {
     //  Conversation history (context tracking per sessionId)
     // ----------------------------------------------------------------
 
-    private static final int  MAX_TURNS       = 3;
-    private static final long HISTORY_TTL_MIN = 30;
+    private static final int  MAX_TURNS         = 3;
+    private static final int  SESSION_TURN_LIMIT = 30;
+    private static final long HISTORY_TTL_MIN    = 30;
 
     public String getConversationHistory(String sessionId) {
         if (sessionId == null || sessionId.isBlank()) return "";
@@ -74,6 +75,18 @@ public class RedisCacheService {
         }
     }
 
+    public boolean isSessionLimitReached(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return false;
+        try {
+            String val = redisTemplate.opsForValue().get(
+                    CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId + ":turns");
+            return val != null && Long.parseLong(val) >= SESSION_TURN_LIMIT;
+        } catch (Exception e) {
+            log.warn("Session turn count read failed: sessionId={}", sessionId);
+            return false;
+        }
+    }
+
     public void appendConversationHistory(String sessionId, String question, String answer) {
         if (sessionId == null || sessionId.isBlank()) return;
         try {
@@ -82,6 +95,10 @@ public class RedisCacheService {
             redisTemplate.opsForList().rightPush(key, entry);
             redisTemplate.opsForList().trim(key, -MAX_TURNS, -1);
             redisTemplate.expire(key, HISTORY_TTL_MIN, TimeUnit.MINUTES);
+
+            String turnKey = CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId + ":turns";
+            redisTemplate.opsForValue().increment(turnKey);
+            redisTemplate.expire(turnKey, HISTORY_TTL_MIN, TimeUnit.MINUTES);
         } catch (Exception e) {
             log.warn("History write failed: sessionId={}, err={}", sessionId, e.getMessage());
         }

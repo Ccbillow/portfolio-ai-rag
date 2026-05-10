@@ -68,6 +68,17 @@ public class ChatServiceImpl implements ChatService {
                     .build();
         }
 
+        // Session turn limit — checked before any embedding/LLM cost
+        if (redisCacheService.isSessionLimitReached(request.getSessionId())) {
+            log.info("Session turn limit reached: sessionId={}", request.getSessionId());
+            return Vos.ChatResponse.builder()
+                    .answer("You've reached the 30-question limit for this session. Please refresh the page to start a new conversation.")
+                    .sources(List.of())
+                    .modelUsed("rule-based")
+                    .latencyMs(System.currentTimeMillis() - start)
+                    .build();
+        }
+
         RagProperties.Embedding cfg = ragProperties.getEmbedding();
 
         // 1. Cache check — disabled until production (rag.cache.enabled: false)
@@ -97,8 +108,21 @@ public class ChatServiceImpl implements ChatService {
         // 3. Build context and call Claude (prompt always uses original question + history)
         String context = hits.stream().map(SearchHit::text)
                 .collect(Collectors.joining("\n\n---\n\n"));
-        String answer  = chatLanguageModel.generate(
-                promptBuilder.build(request.getQuestion(), context, questionType, history));
+        String answer;
+        try {
+            answer = chatLanguageModel.generate(
+                    promptBuilder.build(request.getQuestion(), context, questionType, history));
+        } catch (Exception e) {
+            log.error("Claude generate error", e);
+            return Vos.ChatResponse.builder()
+                    .answer(isQuotaError(e)
+                            ? "My AI assistant is currently unavailable due to usage limits. Please try again later."
+                            : "Something went wrong on my end. Please try again in a moment.")
+                    .sources(List.of())
+                    .modelUsed(modelName)
+                    .latencyMs(System.currentTimeMillis() - start)
+                    .build();
+        }
         redisCacheService.appendConversationHistory(
                 request.getSessionId(), request.getQuestion(), answer);
 
@@ -131,6 +155,16 @@ public class ChatServiceImpl implements ChatService {
             if (earlyReturn != null) {
                 log.info("Agent gate early return (stream): type={}", questionType);
                 emitter.send(SseEmitter.event().name("message").data(earlyReturn));
+                emitter.send(SseEmitter.event().name("done").data("[DONE]"));
+                emitter.complete();
+                return emitter;
+            }
+
+            // Session turn limit
+            if (redisCacheService.isSessionLimitReached(request.getSessionId())) {
+                log.info("Session turn limit reached (stream): sessionId={}", request.getSessionId());
+                emitter.send(SseEmitter.event().name("message")
+                        .data("You've reached the 30-question limit for this session. Please refresh the page to start a new conversation."));
                 emitter.send(SseEmitter.event().name("done").data("[DONE]"));
                 emitter.complete();
                 return emitter;
@@ -190,7 +224,15 @@ public class ChatServiceImpl implements ChatService {
                         @Override
                         public void onError(Throwable error) {
                             log.error("Claude streaming error", error);
-                            emitter.completeWithError(error);
+                            try {
+                                String msg = isQuotaError(error)
+                                        ? "My AI assistant is currently unavailable due to usage limits. Please try again later."
+                                        : "Something went wrong on my end. Please try again in a moment.";
+                                emitter.send(SseEmitter.event().name("error").data(msg));
+                                emitter.complete();
+                            } catch (Exception ex) {
+                                emitter.completeWithError(ex);
+                            }
                         }
                     });
 
@@ -330,6 +372,15 @@ public class ChatServiceImpl implements ChatService {
                 .content()
                 .get(0)
                 .vector();
+    }
+
+    private boolean isQuotaError(Throwable e) {
+        String msg = e.getMessage();
+        if (msg == null) return false;
+        String lower = msg.toLowerCase();
+        return lower.contains("quota") || lower.contains("credit")
+                || lower.contains("overload") || lower.contains("529")
+                || (lower.contains("rate") && lower.contains("limit"));
     }
 
     private List<Vos.SourceChunk> toSources(List<SearchHit> hits) {

@@ -14,6 +14,7 @@ public enum ResultCode {
     FORBIDDEN(403, "Forbidden — insufficient permissions"),
     NOT_FOUND(404, "Resource not found"),
     RATE_LIMITED(429, "Too many requests — please slow down"),
+    DAILY_RATE_LIMITED(429, "Daily question limit reached — please come back tomorrow"),
     INTERNAL_ERROR(500, "Internal server error"),
 
     // Business codes (1xxx)
