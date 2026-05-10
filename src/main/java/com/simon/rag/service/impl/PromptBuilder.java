@@ -55,8 +55,10 @@ public class PromptBuilder {
                 .matches(".*(\\bit\\b|\\bthat\\b|\\bthere\\b|\\bthis\\b|\\bthey\\b|\\bthose\\b).*");
         if (!hasAmbiguity) return null;
 
-        // Extract company from the last answer only — not the whole history
-        return findCompany(extractLastAnswer(history).toLowerCase());
+        // Try last answer first; fall back to last question when answer was a fallback (no company found)
+        String fromLastAnswer = findCompany(extractLastAnswer(history).toLowerCase());
+        if (fromLastAnswer != null) return fromLastAnswer;
+        return findCompany(extractLastQuestion(history).toLowerCase());
     }
 
     private String findCompany(String text) {
@@ -73,6 +75,14 @@ public class PromptBuilder {
         String last = "";
         for (String line : history.split("\n")) {
             if (line.trim().startsWith("A: ")) last = line.trim().substring(3).strip();
+        }
+        return last;
+    }
+
+    private String extractLastQuestion(String history) {
+        String last = "";
+        for (String line : history.split("\n")) {
+            if (line.trim().startsWith("Q: ")) last = line.trim().substring(3).strip();
         }
         return last;
     }

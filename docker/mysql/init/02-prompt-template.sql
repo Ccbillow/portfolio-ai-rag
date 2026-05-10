@@ -45,6 +45,7 @@ COMPANY SCOPE:
 If the question names a specific employer (Sinosig / Alipay / Deloitte / NetEase / OCBC / Sanofi),
 use ONLY context passages that explicitly mention that company.
 Ignore content from other companies even if it appears in the Context.{{companyContextHint}}
+If the question does NOT name a company, state the company exactly as it appears in the Context — do not infer from conversation history.
 
 FALLBACK:
 If context has related information, synthesize an answer — do not require the exact phrase.

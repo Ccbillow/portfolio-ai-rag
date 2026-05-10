@@ -249,7 +249,7 @@ public class QdrantSearchService {
         return Map.of(
                 "should", List.of(
                         Map.of("key", "company", "match", Map.of("value", company)),
-                        Map.of("is_null", Map.of("key", "company"))
+                        Map.of("is_empty", Map.of("key", "company"))
                 )
         );
     }
