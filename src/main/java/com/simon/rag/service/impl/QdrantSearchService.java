@@ -24,7 +24,7 @@ public class QdrantSearchService {
     @Value("${qdrant.collection-name}")
     private String collectionName;
 
-    public record SearchHit(double score, String text, String fileName, String category, String docId, int chunkIndex) {}
+    public record SearchHit(double score, String text, String fileName, String category, String docId, int chunkIndex, String company) {}
 
     // ---- Ingestion ----
 
@@ -55,15 +55,21 @@ public class QdrantSearchService {
 
     /**
      * Dense-only vector search using named "dense" vector.
+     * Pass company (e.g. "Alipay") to restrict results to that company's documents.
      */
-    public List<SearchHit> search(float[] queryVector, int topK, double minScore) {
-        Map<String, Object> body = Map.of(
-                "vector", Map.of("name", "dense", "vector", queryVector),
-                "limit", topK,
-                "with_payload", true,
-                "with_vector", false,
-                "score_threshold", minScore
-        );
+    public List<SearchHit> search(float[] queryVector, int topK, double minScore, String company) {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("vector", Map.of("name", "dense", "vector", queryVector));
+        body.put("limit", topK);
+        body.put("with_payload", true);
+        body.put("with_vector", false);
+        body.put("score_threshold", minScore);
+        if (company != null && !company.isBlank()) {
+            body.put("filter", Map.of(
+                    "must", List.of(Map.of("key", "company", "match", Map.of("value", company)))
+            ));
+        }
+
         SearchResponse response = qdrantWebClient.post()
                 .uri("/collections/{name}/points/search", collectionName)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -77,32 +83,45 @@ public class QdrantSearchService {
             return List.of();
         }
         List<SearchHit> hits = response.result().stream().map(this::toSearchHit).toList();
-        log.info("Dense search: {} hits (topK={}, minScore={})", hits.size(), topK, minScore);
+        log.info("Dense search: {} hits (topK={}, minScore={}, company={})", hits.size(), topK, minScore, company);
         return hits;
+    }
+
+    public List<SearchHit> search(float[] queryVector, int topK, double minScore) {
+        return search(queryVector, topK, minScore, null);
     }
 
     /**
      * Hybrid search: dense + BM25 sparse, fused with RRF via Qdrant Query API.
      * Returns RRF-ranked results — do NOT apply cosine min-score threshold here.
+     * Pass company to restrict to that company's documents.
      */
-    public List<SearchHit> hybridSearch(float[] denseVector, SparseVector sparseVec, int limit) {
+    public List<SearchHit> hybridSearch(float[] denseVector, SparseVector sparseVec, int limit, String company) {
         int prefetchLimit = limit * 2;
 
-        List<Map<String, Object>> prefetch = List.of(
-                Map.of("query", denseVector,
-                       "using", "dense",
-                       "limit", prefetchLimit),
-                Map.of("query", Map.of("indices", sparseVec.indices(), "values", sparseVec.values()),
-                       "using", "sparse",
-                       "limit", prefetchLimit)
-        );
+        Map<String, Object> densePrefetch = new java.util.LinkedHashMap<>();
+        densePrefetch.put("query", denseVector);
+        densePrefetch.put("using", "dense");
+        densePrefetch.put("limit", prefetchLimit);
 
-        Map<String, Object> body = Map.of(
-                "prefetch", prefetch,
-                "query", Map.of("fusion", "rrf"),
-                "limit", limit,
-                "with_payload", true
-        );
+        Map<String, Object> sparsePrefetch = new java.util.LinkedHashMap<>();
+        sparsePrefetch.put("query", Map.of("indices", sparseVec.indices(), "values", sparseVec.values()));
+        sparsePrefetch.put("using", "sparse");
+        sparsePrefetch.put("limit", prefetchLimit);
+
+        if (company != null && !company.isBlank()) {
+            Map<String, Object> filter = Map.of(
+                    "must", List.of(Map.of("key", "company", "match", Map.of("value", company)))
+            );
+            densePrefetch.put("filter", filter);
+            sparsePrefetch.put("filter", filter);
+        }
+
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("prefetch", List.of(densePrefetch, sparsePrefetch));
+        body.put("query", Map.of("fusion", "rrf"));
+        body.put("limit", limit);
+        body.put("with_payload", true);
 
         QueryResponse response = qdrantWebClient.post()
                 .uri("/collections/{name}/points/query", collectionName)
@@ -122,8 +141,12 @@ public class QdrantSearchService {
             return List.of();
         }
         List<SearchHit> hits = response.result().points().stream().map(this::toSearchHit).toList();
-        log.info("Hybrid search (RRF): {} hits (limit={})", hits.size(), limit);
+        log.info("Hybrid search (RRF): {} hits (limit={}, company={})", hits.size(), limit, company);
         return hits;
+    }
+
+    public List<SearchHit> hybridSearch(float[] denseVector, SparseVector sparseVec, int limit) {
+        return hybridSearch(denseVector, sparseVec, limit, null);
     }
 
     /**
@@ -211,7 +234,8 @@ public class QdrantSearchService {
                 getString(p, "fileName"),
                 getString(p, "category"),
                 getString(p, "docId"),
-                idx
+                idx,
+                getString(p, "company")
         );
     }
 

@@ -44,7 +44,7 @@ public class PromptBuilder {
                 .replace("{{question}}", question);
     }
 
-    private String extractFocusCompany(String question, String history) {
+    String extractFocusCompany(String question, String history) {
         // Current question always takes priority
         String fromQuestion = findCompany(question.toLowerCase());
         if (fromQuestion != null) return fromQuestion;

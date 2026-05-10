@@ -63,8 +63,8 @@ public class IngestionRunner {
             // 1. Read file from disk
             byte[] fileBytes = Files.readAllBytes(filePath);
 
-            // 2. Parse to plain text
-            String text = tika.parseToString(new ByteArrayInputStream(fileBytes));
+            // 2. Parse to plain text and normalize whitespace
+            String text = normalizeText(tika.parseToString(new ByteArrayInputStream(fileBytes)));
             log.info("Tika parsed {} chars from '{}'", text.length(), fileName);
 
             // 3. Split into overlapping chunks
@@ -108,6 +108,8 @@ public class IngestionRunner {
                 payload.put("category",    meta.getString("category"));
                 payload.put("chunkIndex",  meta.getString("chunkIndex"));
                 payload.put("chunkTotal",  meta.getString("chunkTotal"));
+                String company = extractCompany(fileName);
+                if (company != null) payload.put("company", company);
 
                 points.add(new QdrantSearchService.PointData(
                         UUID.randomUUID().toString(), vectors, payload));
@@ -130,5 +132,32 @@ public class IngestionRunner {
             documentMapper.updateIngestionResult(
                     docId, IngestionStatus.FAILED.name(), 0, e.getMessage());
         }
+    }
+
+    /**
+     * Extracts company name from filename (case-insensitive).
+     * Client/project names (OCBC, Sanofi) are checked before employer (Deloitte)
+     * so "deloitte-ocbc.docx" is tagged as OCBC, not Deloitte.
+     */
+    private String extractCompany(String fileName) {
+        String lower = fileName.toLowerCase();
+        if (lower.contains("ocbc"))     return "OCBC";
+        if (lower.contains("sanofi"))   return "Sanofi";
+        if (lower.contains("alipay"))   return "Alipay";
+        if (lower.contains("sinosig"))  return "Sinosig";
+        if (lower.contains("deloitte")) return "Deloitte";
+        if (lower.contains("netease"))  return "NetEase";
+        return null;
+    }
+
+    /**
+     * Normalizes Tika output: converts single newlines to spaces (prevents word
+     * concatenation at paragraph boundaries in DOCX/PDF), preserves double newlines.
+     */
+    private String normalizeText(String text) {
+        return text
+                .replace("\r\n", "\n")
+                .replaceAll("(?<!\n)\n(?!\n)", " ")
+                .replaceAll("\n{3,}", "\n\n");
     }
 }

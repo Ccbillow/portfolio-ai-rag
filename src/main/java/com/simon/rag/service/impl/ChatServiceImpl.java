@@ -92,8 +92,9 @@ public class ChatServiceImpl implements ChatService {
         // 2. Load history → resolve retrieval query → Multi-query → Qdrant → (Rerank) → expand
         String history        = redisCacheService.getConversationHistory(request.getSessionId());
         String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
+        String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
         List<String> queries  = multiQueryExpander.expand(retrievalQuery);
-        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg);
+        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, focusCompany);
 
         if (hits.isEmpty()) {
             return Vos.ChatResponse.builder()
@@ -175,8 +176,9 @@ public class ChatServiceImpl implements ChatService {
             // Load history → resolve retrieval query → Multi-query retrieval
             String history        = redisCacheService.getConversationHistory(request.getSessionId());
             String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
+            String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
             List<String> queries  = multiQueryExpander.expand(retrievalQuery);
-            List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg);
+            List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, focusCompany);
             log.info("Stream — {} hits after retrieval pipeline", hits.size());
 
             if (hits.isEmpty()) {
@@ -203,9 +205,10 @@ public class ChatServiceImpl implements ChatService {
                         public void onNext(String token) {
                             fullAnswer.append(token);
                             try {
-                                // Encode actual newlines as literal \n so SSE line-framing doesn't swallow them
-                                emitter.send(SseEmitter.event().name("message")
-                                        .data(token.replace("\n", "\\n")));
+                                // Paragraph breaks → \\n\\n (frontend renders as blank line)
+                                // Single newlines → space (prevents word concatenation in frontend HTML)
+                                String sent = token.replace("\n\n", "\\n\\n").replace("\n", " ");
+                                emitter.send(SseEmitter.event().name("message").data(sent));
                             } catch (Exception e) {
                                 emitter.completeWithError(e);
                             }
@@ -254,8 +257,9 @@ public class ChatServiceImpl implements ChatService {
      * - Hybrid ON : single hybrid search (dense+BM25 via RRF) with larger candidate pool
      * - Hybrid OFF: multi-query dense search (original behavior)
      * Both paths optionally feed into Cohere Reranker, then expand neighbors.
+     * company filter isolates results to a specific employer/client.
      */
-    private List<SearchHit> retrieve(String question, List<String> queries, RagProperties.Embedding cfg) {
+    private List<SearchHit> retrieve(String question, List<String> queries, RagProperties.Embedding cfg, String company) {
         RagProperties.Reranker rerankCfg = ragProperties.getReranker();
         boolean useHybrid = ragProperties.getHybridSearch().isEnabled();
         int fetchLimit = rerankCfg.isEnabled() ? rerankCfg.getCandidateK() : cfg.getTopK();
@@ -266,12 +270,12 @@ public class ChatServiceImpl implements ChatService {
             SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(question);
             if (sparse.isEmpty()) {
                 log.warn("Sparse vector empty for query '{}', falling back to dense search", question);
-                candidates = multiSearch(queries, cfg, fetchLimit);
+                candidates = multiSearch(queries, cfg, fetchLimit, company);
             } else {
-                candidates = qdrantSearchService.hybridSearch(dense, sparse, fetchLimit);
+                candidates = qdrantSearchService.hybridSearch(dense, sparse, fetchLimit, company);
             }
         } else {
-            candidates = multiSearch(queries, cfg, fetchLimit);
+            candidates = multiSearch(queries, cfg, fetchLimit, company);
         }
 
         if (candidates.isEmpty()) return List.of();
@@ -287,11 +291,11 @@ public class ChatServiceImpl implements ChatService {
      * Embeds each query, searches Qdrant, merges by (docId:chunkIndex).
      * First occurrence wins (highest score), sorted desc, capped at limit.
      */
-    private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg, int limit) {
+    private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg, int limit, String company) {
         LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
         for (String query : queries) {
             float[] vector = embedQuestion(query);
-            qdrantSearchService.search(vector, limit, cfg.getMinScore())
+            qdrantSearchService.search(vector, limit, cfg.getMinScore(), company)
                     .forEach(hit -> seen.putIfAbsent(hit.docId() + ":" + hit.chunkIndex(), hit));
         }
         return seen.values().stream()
