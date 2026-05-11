@@ -73,6 +73,8 @@ rag:
     enabled: false   # enable in production after Phase 5 search quality is finalized
   hybrid-search:
     enabled: true
+  multi-query:
+    enabled: false
   reranker:
     enabled: true
     candidate-k: 10

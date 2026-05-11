@@ -3,6 +3,7 @@ package com.simon.rag.service.impl;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -17,6 +18,9 @@ public class MultiQueryExpander {
 
     private final ChatLanguageModel chatLanguageModel;
 
+    @Value("${rag.multi-query.enabled:true}")
+    private boolean enabled;
+
     private static final String PROMPT = """
             Rephrase the following interview question into 2 alternative search queries \
             that would retrieve the same information from a vector database.
@@ -30,6 +34,7 @@ public class MultiQueryExpander {
      * Falls back to [originalQuestion] on any error so retrieval always proceeds.
      */
     public List<String> expand(String question) {
+        if (!enabled) return List.of(question);
         try {
             String response = chatLanguageModel.generate(String.format(PROMPT, question));
 
