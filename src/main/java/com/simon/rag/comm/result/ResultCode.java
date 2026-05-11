@@ -10,12 +10,12 @@ public enum ResultCode {
 
     SUCCESS(200, "success"),
     BAD_REQUEST(400, "Bad request"),
-    UNAUTHORIZED(401, "Unauthorized — please login"),
-    FORBIDDEN(403, "Forbidden — insufficient permissions"),
+    UNAUTHORIZED(401, "Session expired — please refresh the page"),
+    FORBIDDEN(403, "Access denied"),
     NOT_FOUND(404, "Resource not found"),
-    RATE_LIMITED(429, "Too many requests — please slow down"),
-    DAILY_RATE_LIMITED(429, "Daily question limit reached — please come back tomorrow"),
-    INTERNAL_ERROR(500, "Internal server error"),
+    RATE_LIMITED(429, "You're asking too fast — please slow down a little!"),
+    DAILY_RATE_LIMITED(429, "You've reached today's question limit. Come back tomorrow!"),
+    INTERNAL_ERROR(500, "Something went wrong — please try again"),
 
     // Business codes (1xxx)
     DOCUMENT_PARSE_FAILED(1001, "Document parsing failed"),

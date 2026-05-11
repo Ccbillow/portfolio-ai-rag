@@ -20,33 +20,46 @@ public class QuestionClassifier {
 
     private static final Pattern OUT_OF_SCOPE_PATTERN = Pattern.compile(
             "(?i)\\b(weather|forecast|recipe|cook|bake|sport|football|cricket|" +
-            "basketball|movie|film|song|music|lyrics|news|politics|president|" +
+            "basketball|movie|film|song|music|lyrics|breaking news|news article|news headline|politics|president|" +
             "prime minister|capital of|translate|joke|poem|write me a|" +
             "calculate|solve this|what is \\d|stock price|bitcoin|crypto|" +
-            "restaurant|hotel|flight|visa(?! status| pr| permanent))\\b");
+            "restaurant|hotel|flight|visa(?! status| pr| permanent)|" +
+            // Requests asking the assistant to generate/suggest questions or content
+            "give me (?:\\w+ ){0,3}questions?|" +
+            "suggest (?:\\w+ ){0,3}questions?|generate (?:\\w+ ){0,3}questions?|" +
+            "list (?:\\w+ ){0,3}questions?|what questions (?:should|can|would))\\b");
 
     private static final Pattern STRATEGIC_PATTERN = Pattern.compile(
             "(?i)\\b(salary|salaries|compensation|package|pay rate|ctc|" +
             "how much (do you|are you|would you|did you)|" +
             "expected (salary|pay|compensation|rate)|" +
             "what (are|were) you (making|earning|paid)|" +
-            "weakness|weaknesses|not (good|great|strong) at|" +
+            "not (good|great|strong) at|" +
             "area.*to improve|room.*to improve|biggest flaw|" +
             "conflict with (?:my |your |the )?(?:manager|boss|supervisor|director|lead)|" +
-            "argue with|disagree.*(?:manager|colleague|team)|" +
+            "argue with (?:my |your |the )?(?:manager|boss|supervisor|director|lead)|" +
+            "disagree.*(?:my |your |the )?(?:manager|boss|supervisor|director|lead)|" +
             "difficult.*(?:manager|colleague|coworker)|" +
             "why should we (?:hire|choose) you over|what makes you better than)\\b");
 
     private static final Pattern FACTUAL_PATTERN = Pattern.compile(
-            "(?i)^(how long|how many|how old|how far|" +
+            "(?i)^(how long|how many|how old|how far|how well|" +
             "when did|when were|when (are|is)|" +
             "where (are|do|did|is|were) you|" +
-            "what (year|date|city|country|company|role|title|team)|" +
+            "what (year|date|city|country|company|role|title|team|time)|" +
+            "what (type|kind|sort) of (role|job|work|position|contact|communication)|" +
             "which (company|role|city|team)|" +
-            "do you (have|hold|currently)|" +
-            "are you (based|located|in australia|in sydney|a pr|an? |currently)|" +
-            "have you (lived|worked|studied|graduated)|" +
+            "do you (have|hold|currently|mind)|" +
+            "would you (consider|accept|be)|" +
+            "are you (based|located|in australia|in sydney|a pr|an? |currently|" +
+                     "available|flexible|open|willing|able|considering)|" +
+            "is (remote|hybrid|on.?site|relocation|wfh|working from home)|" +
+            "have you (ever )?(?:lived|worked|studied|graduated)|" +
             "did you (graduate|study|move|relocate|immigrate))");
+
+    // Catches "Tell me about a time / challenging / difficult / specific..." BEFORE TECHNICAL
+    private static final Pattern BEHAVIORAL_PRE_PATTERN = Pattern.compile(
+            "(?i)^tell me about (a time|a challenging|a difficult|a specific|an? experience|a situation|when you)");
 
     private static final Pattern TECHNICAL_PATTERN = Pattern.compile(
             "(?i)\\b(architect(?:ure)?|design pattern|how does .{1,30} work|" +
@@ -60,7 +73,13 @@ public class QuestionClassifier {
             "docker|kubernetes|k8s|ci.?cd|pipeline|deploy|" +
             "sql|database|index|query|hibernate|mybatis|orm|" +
             "algorithm|complexity|big.?o|refactor|code review|" +
-            "api design|rest|grpc|event.driven|message queue)\\b");
+            "api design|rest|grpc|event.driven|message queue|" +
+            "what projects|all projects|projects (?:have|did) you|" +
+            "your work (?:on|at|in|with)|responsibility|" +
+            "what did you (?:deliver|build|achieve|accomplish)|" +
+            "your (?:project|projects|experience|role) (?:at|on|in)|" +
+            "advantage|strength|key skills?|core skills?|tech stack|" +
+            "technical skills?|your background|your expertise)\\b");
 
     // ── classify ──────────────────────────────────────────────────────
 
@@ -88,11 +107,15 @@ public class QuestionClassifier {
         if (FACTUAL_PATTERN.matcher(trimmed).find())
             return QuestionType.FACTUAL;
 
-        // 5. TECHNICAL
+        // 5. BEHAVIORAL_PRE — "Tell me about a time/challenging/..." beats TECHNICAL
+        if (BEHAVIORAL_PRE_PATTERN.matcher(trimmed).find())
+            return QuestionType.BEHAVIORAL;
+
+        // 6. TECHNICAL
         if (TECHNICAL_PATTERN.matcher(trimmed).find())
             return QuestionType.TECHNICAL;
 
-        // 6. BEHAVIORAL (default)
+        // 7. BEHAVIORAL (default)
         return QuestionType.BEHAVIORAL;
     }
 

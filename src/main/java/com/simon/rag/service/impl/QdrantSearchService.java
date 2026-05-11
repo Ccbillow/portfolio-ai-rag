@@ -24,7 +24,7 @@ public class QdrantSearchService {
     @Value("${qdrant.collection-name}")
     private String collectionName;
 
-    public record SearchHit(double score, String text, String fileName, String category, String docId, int chunkIndex, String company) {}
+    public record SearchHit(double score, String text, String fileName, String category, String docId, int chunkIndex, List<String> companies) {}
 
     // ---- Ingestion ----
 
@@ -231,7 +231,7 @@ public class QdrantSearchService {
                 getString(p, "category"),
                 getString(p, "docId"),
                 idx,
-                getString(p, "company")
+                getStringList(p, "companies")
         );
     }
 
@@ -241,15 +241,23 @@ public class QdrantSearchService {
         return v != null ? v.toString() : null;
     }
 
+    @SuppressWarnings("unchecked")
+    private List<String> getStringList(Map<String, Object> payload, String key) {
+        if (payload == null) return List.of();
+        Object v = payload.get(key);
+        if (v instanceof List<?>) return (List<String>) v;
+        return List.of();
+    }
+
     /**
-     * Qdrant filter: company = X  OR  company field missing (general docs like resume/overview).
-     * This ensures career-overview documents without a company tag are always retrievable.
+     * Qdrant filter: chunks where the companies array contains the target company,
+     * OR chunks with no companies tag (general/shared documents).
      */
     private Map<String, Object> companyFilter(String company) {
         return Map.of(
                 "should", List.of(
-                        Map.of("key", "company", "match", Map.of("value", company)),
-                        Map.of("is_empty", Map.of("key", "company"))
+                        Map.of("key", "companies", "match", Map.of("any", List.of(company))),
+                        Map.of("is_empty", Map.of("key", "companies"))
                 )
         );
     }

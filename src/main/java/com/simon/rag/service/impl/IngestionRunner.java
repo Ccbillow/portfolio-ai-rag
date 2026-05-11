@@ -86,6 +86,9 @@ public class IngestionRunner {
             // 5. Compute dense embeddings (OpenAI)
             List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
 
+            // Filename-level companies — non-empty means the whole file is scoped to those companies.
+            List<String> fileCompanies = extractCompaniesFromText(fileName);
+
             // 6. Build Qdrant points with dense + sparse vectors
             List<QdrantSearchService.PointData> points = new ArrayList<>();
             for (int i = 0; i < segments.size(); i++) {
@@ -108,8 +111,12 @@ public class IngestionRunner {
                 payload.put("category",    meta.getString("category"));
                 payload.put("chunkIndex",  meta.getString("chunkIndex"));
                 payload.put("chunkTotal",  meta.getString("chunkTotal"));
-                String company = extractCompany(fileName);
-                if (company != null) payload.put("company", company);
+
+                // Filename companies take priority; fall back to scanning the chunk text itself.
+                List<String> companies = fileCompanies.isEmpty()
+                        ? extractCompaniesFromText(seg.text())
+                        : fileCompanies;
+                if (!companies.isEmpty()) payload.put("companies", companies);
 
                 points.add(new QdrantSearchService.PointData(
                         UUID.randomUUID().toString(), vectors, payload));
@@ -134,23 +141,12 @@ public class IngestionRunner {
         }
     }
 
-    /**
-     * Extracts company name from filename (case-insensitive).
-     * Client/project names (OCBC, Sanofi) are checked before employer (Deloitte)
-     * so "deloitte-ocbc.docx" is tagged as OCBC, not Deloitte.
-     */
-    private String extractCompany(String fileName) {
-        String lower = fileName.toLowerCase();
-        // Employer names checked before client/project names:
-        // "Deloitte_OCBC.docx" → "Deloitte" (correct employer tag)
-        // Stand-alone "OCBC.docx" or "ocbc_project.docx" → "OCBC"
-        if (lower.contains("alipay"))   return "Alipay";
-        if (lower.contains("sinosig"))  return "Sinosig";
-        if (lower.contains("netease"))  return "NetEase";
-        if (lower.contains("deloitte")) return "Deloitte";
-        if (lower.contains("ocbc"))     return "OCBC";
-        if (lower.contains("sanofi"))   return "Sanofi";
-        return null;
+    /** Returns all configured company names found in the given text (case-insensitive). */
+    private List<String> extractCompaniesFromText(String text) {
+        String lower = text.toLowerCase();
+        return ragProperties.getCompanies().stream()
+                .filter(c -> lower.contains(c.toLowerCase()))
+                .toList();
     }
 
     /**

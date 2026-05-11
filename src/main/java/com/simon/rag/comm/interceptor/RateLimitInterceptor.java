@@ -76,7 +76,7 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         response.setStatus(429);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");
-        response.getWriter().write(objectMapper.writeValueAsString(Result.error(code)));
+        response.getOutputStream().write(objectMapper.writeValueAsBytes(Result.error(code)));
     }
 
     private String resolveClientIp(HttpServletRequest request) {

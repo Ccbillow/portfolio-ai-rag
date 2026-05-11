@@ -43,3 +43,6 @@ dist/
 # ===== Test reports =====
 /jmeter-results/
 *.jtl
+
+# ===== RAG eval / test scripts (local only) =====
+docs/test/

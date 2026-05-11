@@ -28,9 +28,15 @@ public class PromptBuilder {
         String typeHint = promptTemplateService.get(typeHintKey);
 
         String focusCompany = extractFocusCompany(question, history);
+        String subProjectExclusion = switch (focusCompany != null ? focusCompany : "") {
+            case "Sanofi" -> " Exclude all OCBC content. Do NOT mention Kafka, Personal Deposit System, or any OCBC-specific term, even if they appear in Context.";
+            case "OCBC"   -> " Exclude all Sanofi content. Do NOT mention reverse-match, XMind, or any Sanofi-specific term, even if they appear in Context.";
+            default       -> "";
+        };
         String companyContextHint = focusCompany != null
                 ? "\nConversation context: the current topic is " + focusCompany + ". " +
-                  "Apply COMPANY SCOPE to " + focusCompany + " even when the question uses pronouns (it / that / this / there)."
+                  "Apply COMPANY SCOPE to " + focusCompany + " even when the question uses pronouns (it / that / this / there)." +
+                  subProjectExclusion
                 : "";
 
         String historySection = (history == null || history.isBlank()) ? "" :
@@ -55,10 +61,25 @@ public class PromptBuilder {
                 .matches(".*(\\bit\\b|\\bthat\\b|\\bthere\\b|\\bthis\\b|\\bthey\\b|\\bthose\\b).*");
         if (!hasAmbiguity) return null;
 
-        // Try last answer first; fall back to last question when answer was a fallback (no company found)
-        String fromLastAnswer = findCompany(extractLastAnswer(history).toLowerCase());
-        if (fromLastAnswer != null) return fromLastAnswer;
-        return findCompany(extractLastQuestion(history).toLowerCase());
+        // Scan Q: (user questions) before A: (AI answers) — user questions are authoritative;
+        // AI answers may be wrong and would otherwise poison subsequent history lookups.
+        // Within each pass, scan most-recent to oldest so follow-up chains resolve correctly.
+        String[] lines = history.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            if (line.startsWith("Q: ")) {
+                String found = findCompany(line.substring(3).strip().toLowerCase());
+                if (found != null) return found;
+            }
+        }
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            if (line.startsWith("A: ")) {
+                String found = findCompany(line.substring(3).strip().toLowerCase());
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     private String findCompany(String text) {

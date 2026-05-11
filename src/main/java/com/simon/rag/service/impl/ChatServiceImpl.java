@@ -93,7 +93,7 @@ public class ChatServiceImpl implements ChatService {
         String history        = redisCacheService.getConversationHistory(request.getSessionId());
         String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
         String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
-        List<String> queries  = multiQueryExpander.expand(retrievalQuery);
+        List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
         List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, toFilterCompany(focusCompany));
 
         if (hits.isEmpty()) {
@@ -117,8 +117,8 @@ public class ChatServiceImpl implements ChatService {
             log.error("Claude generate error", e);
             return Vos.ChatResponse.builder()
                     .answer(isQuotaError(e)
-                            ? "My AI assistant is currently unavailable due to usage limits. Please try again later."
-                            : "Something went wrong on my end. Please try again in a moment.")
+                            ? "The assistant is a bit overloaded right now — please try again in a moment."
+                            : "Something went wrong — please try again.")
                     .sources(List.of())
                     .modelUsed(modelName)
                     .latencyMs(System.currentTimeMillis() - start)
@@ -148,7 +148,14 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public SseEmitter askStream(Dtos.ChatRequest request, Long userId) {
-        SseEmitter emitter = new SseEmitter(60_000L);
+        SseEmitter emitter = new SseEmitter(90_000L);
+        emitter.onTimeout(() -> {
+            try {
+                emitter.send(SseEmitter.event().name("error")
+                        .data("Response is taking longer than expected. Please try again."));
+                emitter.complete();
+            } catch (Exception ignored) {}
+        });
         try {
             // 0. Agent Gate
             QuestionType questionType = questionClassifier.classify(request.getQuestion());
@@ -177,7 +184,7 @@ public class ChatServiceImpl implements ChatService {
             String history        = redisCacheService.getConversationHistory(request.getSessionId());
             String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
             String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
-            List<String> queries  = multiQueryExpander.expand(retrievalQuery);
+            List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
             List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, toFilterCompany(focusCompany));
             log.info("Stream — {} hits after retrieval pipeline", hits.size());
 
@@ -231,8 +238,8 @@ public class ChatServiceImpl implements ChatService {
                             log.error("Claude streaming error", error);
                             try {
                                 String msg = isQuotaError(error)
-                                        ? "My AI assistant is currently unavailable due to usage limits. Please try again later."
-                                        : "Something went wrong on my end. Please try again in a moment.";
+                                        ? "My AI assistant is a bit overloaded right now — please try again in a moment."
+                                        : "Something went wrong on my end. Please try again.";
                                 emitter.send(SseEmitter.event().name("error").data(msg));
                                 emitter.complete();
                             } catch (Exception ex) {
@@ -254,7 +261,7 @@ public class ChatServiceImpl implements ChatService {
 
     /**
      * Full retrieval pipeline:
-     * - Hybrid ON : single hybrid search (dense+BM25 via RRF) with larger candidate pool
+     * - Hybrid ON : hybrid search (dense+BM25 via RRF) run for each expanded query, merged and deduped
      * - Hybrid OFF: multi-query dense search (original behavior)
      * Both paths optionally feed into Cohere Reranker, then expand neighbors.
      * company filter isolates results to a specific employer/client.
@@ -266,14 +273,20 @@ public class ChatServiceImpl implements ChatService {
 
         List<SearchHit> candidates;
         if (useHybrid) {
-            float[] dense = embedQuestion(question);
-            SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(question);
-            if (sparse.isEmpty()) {
-                log.warn("Sparse vector empty for query '{}', falling back to dense search", question);
-                candidates = multiSearch(queries, cfg, fetchLimit, company);
-            } else {
-                candidates = qdrantSearchService.hybridSearch(dense, sparse, fetchLimit, company);
+            LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
+            for (String q : queries) {
+                float[] dense = embedQuestion(q);
+                SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(q);
+                if (!sparse.isEmpty()) {
+                    qdrantSearchService.hybridSearch(dense, sparse, fetchLimit, company)
+                            .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
+                } else {
+                    log.warn("Sparse vector empty for query '{}', using dense only", q);
+                    qdrantSearchService.search(dense, fetchLimit, cfg.getMinScore(), company)
+                            .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
+                }
             }
+            candidates = new ArrayList<>(seen.values());
         } else {
             candidates = multiSearch(queries, cfg, fetchLimit, company);
         }
@@ -368,6 +381,13 @@ public class ChatServiceImpl implements ChatService {
 
         if (context.isBlank()) return question;
 
+        // If the context snippet doesn't carry a company name (e.g. "15 months."),
+        // prepend the focus company so the embedding anchors to the right topic.
+        String focusCompany = promptBuilder.extractFocusCompany(question, history);
+        if (focusCompany != null && !context.toLowerCase().contains(focusCompany.toLowerCase())) {
+            context = focusCompany + " " + context;
+        }
+
         log.debug("Retrieval resolved — context: '{}' | question: '{}'", context, question);
         return context + " " + question;
     }
@@ -381,16 +401,27 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
-     * Maps client/project names to their employer for Qdrant filtering.
-     * OCBC and Sanofi are Deloitte projects — their documents are tagged "Deloitte".
-     * The prompt still uses the original focusCompany (e.g. "OCBC") for scope instructions.
+     * Deloitte delivered two client projects (OCBC and Sanofi).
+     * When a question is about Deloitte, the original query alone scores
+     * OCBC chunks much higher than Sanofi chunks (different vocabulary).
+     * Adding explicit sub-project variants ensures both projects' chunks
+     * are retrievable via multi-search.
      */
+    private List<String> withSubProjectQueries(List<String> queries, String focusCompany) {
+        if (focusCompany == null) return queries;
+        List<String> subgroups = ragProperties.getCompanySubgroups()
+                .getOrDefault(focusCompany, List.of());
+        if (subgroups.isEmpty()) return queries;
+        String original = queries.get(0);
+        List<String> expanded = new ArrayList<>(queries);
+        for (String sub : subgroups) {
+            expanded.add(original.replaceAll("(?i)\\b" + java.util.regex.Pattern.quote(focusCompany) + "\\b", sub));
+        }
+        return expanded;
+    }
+
     private String toFilterCompany(String focusCompany) {
-        if (focusCompany == null) return null;
-        return switch (focusCompany) {
-            case "OCBC", "Sanofi" -> "Deloitte";
-            default -> focusCompany;
-        };
+        return focusCompany;
     }
 
     private boolean isQuotaError(Throwable e) {

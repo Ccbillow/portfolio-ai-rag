@@ -51,6 +51,17 @@ cohere:
   api-key: ${COHERE_API_KEY:}
 
 rag:
+  companies:
+    - Alipay
+    - Sinosig
+    - NetEase
+    - Deloitte
+    - OCBC
+    - Sanofi
+  company-subgroups:
+    Deloitte:
+      - OCBC
+      - Sanofi
   embedding:
     chunk-size: 512
     chunk-overlap: 60
