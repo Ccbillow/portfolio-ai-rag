@@ -14,7 +14,7 @@ public enum ResultCode {
     FORBIDDEN(403, "Access denied"),
     NOT_FOUND(404, "Resource not found"),
     RATE_LIMITED(429, "You're asking too fast — please slow down a little!"),
-    DAILY_RATE_LIMITED(429, "You've reached today's question limit. Come back tomorrow!"),
+    DAILY_RATE_LIMITED(429, "You've reached today's question limit — thank you for your interest! Feel free to reach out directly via email or phone if you'd like to continue the conversation."),
     INTERNAL_ERROR(500, "Something went wrong — please try again"),
 
     // Business codes (1xxx)

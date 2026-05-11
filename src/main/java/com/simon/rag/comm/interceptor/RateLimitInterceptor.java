@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Per-IP rate limiter for chat endpoints using Bucket4j in-process token buckets.
- * Limits: 10 requests/minute and 50 requests/day per IP.
+ * Limits: 5 requests/minute and 20 requests/day per IP.
  * Minute limit is checked first to avoid burning daily quota on rapid-fire bursts.
  */
 @Slf4j
@@ -27,8 +27,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class RateLimitInterceptor implements HandlerInterceptor {
 
-    private static final int  MINUTE_CAPACITY = 10;
-    private static final int  DAILY_CAPACITY  = 50;
+    private static final int  MINUTE_CAPACITY = 5;
+    private static final int  DAILY_CAPACITY  = 20;
 
     private final ConcurrentHashMap<String, Bucket> minuteBuckets = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Bucket> dailyBuckets  = new ConcurrentHashMap<>();
