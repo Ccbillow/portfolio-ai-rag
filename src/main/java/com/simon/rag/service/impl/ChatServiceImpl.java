@@ -20,8 +20,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
@@ -47,59 +49,86 @@ public class ChatServiceImpl implements ChatService {
     @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
     private String modelName;
 
+    private static final String SESSION_LIMIT_MESSAGE =
+            "You've reached the 30-question limit for this session. Please refresh the page to start a new conversation.";
+
+    /**
+     * Shared result of the pre-LLM pipeline steps (gate checks + retrieval).
+     * earlyReturn is non-null when the request should be answered without hitting the LLM or Qdrant.
+     */
+    private record PipelineResult(
+            QuestionType questionType,
+            String earlyReturn,
+            String history,
+            List<SearchHit> hits,
+            String context,
+            String focusCompany
+    ) {
+        boolean hasEarlyReturn() { return earlyReturn != null; }
+        boolean noHits()         { return hits != null && hits.isEmpty(); }
+    }
+
+    /**
+     * Runs all pre-LLM steps shared by ask() and askStream():
+     * agent gate → session limit → history → retrieval → neighbour expansion.
+     * Returns a PipelineResult; callers check hasEarlyReturn() / noHits() before proceeding to LLM.
+     */
+    private PipelineResult runPipeline(Dtos.ChatRequest request) {
+        String question = request.getQuestion();
+
+        QuestionType type = questionClassifier.classify(question);
+        String earlyReturn = questionClassifier.earlyReturnMessage(type, question);
+        if (earlyReturn != null) {
+            log.info("Agent gate early return: type={}", type);
+            return new PipelineResult(type, earlyReturn, null, null, null, null);
+        }
+
+        if (redisCacheService.isSessionLimitReached(request.getSessionId())) {
+            log.info("Session turn limit reached: sessionId={}", request.getSessionId());
+            return new PipelineResult(type, SESSION_LIMIT_MESSAGE, null, null, null, null);
+        }
+
+        RagProperties.Embedding cfg = ragProperties.getEmbedding();
+        String history        = redisCacheService.getConversationHistory(request.getSessionId());
+        String focusCompany   = promptBuilder.extractFocusCompany(question, history);
+        String retrievalQuery = resolveRetrievalQuery(question, history, focusCompany);
+        List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
+        List<String> siblings = getSiblingCompanies(focusCompany);
+        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, focusCompany, siblings);
+
+        String context = hits.stream().map(SearchHit::text)
+                .collect(Collectors.joining("\n\n---\n\n"));
+        return new PipelineResult(type, null, history, hits, context, focusCompany);
+    }
+
     // ----------------------------------------------------------------
     //  Synchronous — Postman / REST clients
     // ----------------------------------------------------------------
 
     @Override
-    public Vos.ChatResponse ask(Dtos.ChatRequest request, Long userId) {
+    public Vos.ChatResponse ask(Dtos.ChatRequest request) {
         long start = System.currentTimeMillis();
         log.info("RAG ask: '{}'", request.getQuestion());
 
-        // 0. Agent Gate — classify before any pipeline cost
-        QuestionType questionType = questionClassifier.classify(request.getQuestion());
-        String earlyReturn = questionClassifier.earlyReturnMessage(questionType, request.getQuestion());
-        if (earlyReturn != null) {
-            log.info("Agent gate early return: type={}", questionType);
-            return Vos.ChatResponse.builder()
-                    .answer(earlyReturn)
-                    .sources(List.of())
-                    .modelUsed("rule-based")
-                    .latencyMs(System.currentTimeMillis() - start)
-                    .build();
-        }
-
-        // Session turn limit — checked before any embedding/LLM cost
-        if (redisCacheService.isSessionLimitReached(request.getSessionId())) {
-            log.info("Session turn limit reached: sessionId={}", request.getSessionId());
-            return Vos.ChatResponse.builder()
-                    .answer("You've reached the 30-question limit for this session. Please refresh the page to start a new conversation.")
-                    .sources(List.of())
-                    .modelUsed("rule-based")
-                    .latencyMs(System.currentTimeMillis() - start)
-                    .build();
-        }
-
-        RagProperties.Embedding cfg = ragProperties.getEmbedding();
-
         // 1. Cache check — disabled until production (rag.cache.enabled: false)
         String cacheKey = CacheConstant.CHAT_CACHE_PREFIX
-                + DigestUtils.md5DigestAsHex(request.getQuestion().getBytes());
+                + DigestUtils.md5DigestAsHex(request.getQuestion().getBytes(StandardCharsets.UTF_8));
         if (ragProperties.getCache().isEnabled()) {
             Vos.ChatResponse cached = redisCacheService.getChatCache(cacheKey, start);
             if (cached != null) return cached;
         }
 
-        // 2. Load history → resolve retrieval query → Multi-query → Qdrant → (Rerank) → expand
-        String history        = redisCacheService.getConversationHistory(request.getSessionId());
-        String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
-        String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
-        List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
-        String filterCompany  = toFilterCompany(focusCompany);
-        List<String> siblings = getSiblingCompanies(filterCompany);
-        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, filterCompany, siblings);
-
-        if (hits.isEmpty()) {
+        // 2. Gate checks + retrieval pipeline
+        PipelineResult pipeline = runPipeline(request);
+        if (pipeline.hasEarlyReturn()) {
+            return Vos.ChatResponse.builder()
+                    .answer(pipeline.earlyReturn())
+                    .sources(List.of())
+                    .modelUsed("rule-based")
+                    .latencyMs(System.currentTimeMillis() - start)
+                    .build();
+        }
+        if (pipeline.noHits()) {
             return Vos.ChatResponse.builder()
                     .answer("I don't have specific information about that in my knowledge base. "
                             + "Please try rephrasing your question.")
@@ -109,13 +138,12 @@ public class ChatServiceImpl implements ChatService {
                     .build();
         }
 
-        // 3. Build context and call Claude (prompt always uses original question + history)
-        String context = hits.stream().map(SearchHit::text)
-                .collect(Collectors.joining("\n\n---\n\n"));
+        // 3. Call Claude
         String answer;
         try {
             answer = chatLanguageModel.generate(
-                    promptBuilder.build(request.getQuestion(), context, questionType, history));
+                    promptBuilder.build(request.getQuestion(), pipeline.context(),
+                            pipeline.questionType(), pipeline.history(), pipeline.focusCompany()));
         } catch (Exception e) {
             log.error("Claude generate error", e);
             return Vos.ChatResponse.builder()
@@ -132,7 +160,7 @@ public class ChatServiceImpl implements ChatService {
 
         Vos.ChatResponse response = Vos.ChatResponse.builder()
                 .answer(answer)
-                .sources(toSources(hits))
+                .sources(toSources(pipeline.hits()))
                 .modelUsed(modelName)
                 .latencyMs(System.currentTimeMillis() - start)
                 .build();
@@ -150,7 +178,7 @@ public class ChatServiceImpl implements ChatService {
     // ----------------------------------------------------------------
 
     @Override
-    public SseEmitter askStream(Dtos.ChatRequest request, Long userId) {
+    public SseEmitter askStream(Dtos.ChatRequest request) {
         SseEmitter emitter = new SseEmitter(90_000L);
         emitter.onTimeout(() -> {
             try {
@@ -160,40 +188,18 @@ public class ChatServiceImpl implements ChatService {
             } catch (Exception ignored) {}
         });
         try {
-            // 0. Agent Gate
-            QuestionType questionType = questionClassifier.classify(request.getQuestion());
-            String earlyReturn = questionClassifier.earlyReturnMessage(questionType, request.getQuestion());
-            if (earlyReturn != null) {
-                log.info("Agent gate early return (stream): type={}", questionType);
-                emitter.send(SseEmitter.event().name("message").data(earlyReturn));
+            // Gate checks + retrieval pipeline
+            PipelineResult pipeline = runPipeline(request);
+            if (pipeline.hasEarlyReturn()) {
+                emitter.send(SseEmitter.event().name("message").data(pipeline.earlyReturn()));
                 emitter.send(SseEmitter.event().name("done").data("[DONE]"));
                 emitter.complete();
                 return emitter;
             }
+            log.info("Stream — {} hits after retrieval pipeline",
+                    pipeline.hits() == null ? 0 : pipeline.hits().size());
 
-            // Session turn limit
-            if (redisCacheService.isSessionLimitReached(request.getSessionId())) {
-                log.info("Session turn limit reached (stream): sessionId={}", request.getSessionId());
-                emitter.send(SseEmitter.event().name("message")
-                        .data("You've reached the 30-question limit for this session. Please refresh the page to start a new conversation."));
-                emitter.send(SseEmitter.event().name("done").data("[DONE]"));
-                emitter.complete();
-                return emitter;
-            }
-
-            RagProperties.Embedding cfg = ragProperties.getEmbedding();
-
-            // Load history → resolve retrieval query → Multi-query retrieval
-            String history        = redisCacheService.getConversationHistory(request.getSessionId());
-            String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
-            String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
-            List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
-            String filterCompany  = toFilterCompany(focusCompany);
-            List<String> siblings = getSiblingCompanies(filterCompany);
-            List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, filterCompany, siblings);
-            log.info("Stream — {} hits after retrieval pipeline", hits.size());
-
-            if (hits.isEmpty()) {
+            if (pipeline.noHits()) {
                 emitter.send(SseEmitter.event().name("message")
                         .data("I don't have specific information about that in my knowledge base."));
                 emitter.send(SseEmitter.event().name("done").data("[DONE]"));
@@ -201,15 +207,14 @@ public class ChatServiceImpl implements ChatService {
                 return emitter;
             }
 
-            emitter.send(SseEmitter.event().name("sources").data(toSources(hits)));
+            emitter.send(SseEmitter.event().name("sources").data(toSources(pipeline.hits())));
 
-            String context   = hits.stream().map(SearchHit::text)
-                    .collect(Collectors.joining("\n\n---\n\n"));
             String question  = request.getQuestion();
             String sessionId = request.getSessionId();
 
             streamingChatLanguageModel.generate(
-                    promptBuilder.build(question, context, questionType, history),
+                    promptBuilder.build(question, pipeline.context(),
+                            pipeline.questionType(), pipeline.history(), pipeline.focusCompany()),
                     new StreamingResponseHandler<AiMessage>() {
                         private final StringBuilder fullAnswer = new StringBuilder();
 
@@ -269,11 +274,11 @@ public class ChatServiceImpl implements ChatService {
      * - Hybrid ON : hybrid search (dense+BM25 via RRF) run for each expanded query, merged and deduped
      * - Hybrid OFF: multi-query dense search (original behavior)
      * Both paths optionally feed into Cohere Reranker, then expand neighbors.
-     * company filter isolates results to a specific employer/client.
+     * focusCompany + siblings determine the company-scope filter applied post-expansion.
      */
     private List<SearchHit> retrieve(String question, List<String> queries,
-                                      RagProperties.Embedding cfg, String company,
-                                      List<String> excludeCompanies) {
+                                      RagProperties.Embedding cfg, String focusCompany,
+                                      List<String> siblings) {
         RagProperties.Reranker rerankCfg = ragProperties.getReranker();
         boolean useHybrid = ragProperties.getHybridSearch().isEnabled();
         int fetchLimit = rerankCfg.isEnabled() ? rerankCfg.getCandidateK() : cfg.getTopK();
@@ -285,17 +290,17 @@ public class ChatServiceImpl implements ChatService {
                 float[] dense = embedQuestion(q);
                 SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(q);
                 if (!sparse.isEmpty()) {
-                    qdrantSearchService.hybridSearch(dense, sparse, fetchLimit, company, excludeCompanies)
+                    qdrantSearchService.hybridSearch(dense, sparse, fetchLimit, focusCompany)
                             .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
                 } else {
                     log.warn("Sparse vector empty for query '{}', using dense only", q);
-                    qdrantSearchService.search(dense, fetchLimit, cfg.getMinScore(), company, excludeCompanies)
+                    qdrantSearchService.search(dense, fetchLimit, cfg.getMinScore(), focusCompany)
                             .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
                 }
             }
             candidates = new ArrayList<>(seen.values());
         } else {
-            candidates = multiSearch(queries, cfg, fetchLimit, company, excludeCompanies);
+            candidates = multiSearch(queries, cfg, fetchLimit, focusCompany, siblings);
         }
 
         if (candidates.isEmpty()) return List.of();
@@ -310,14 +315,14 @@ public class ChatServiceImpl implements ChatService {
         // A chunk is excluded if it carries a label for an unrelated independent company
         // (e.g. ["Alipay","OCBC","Sanofi","Deloitte"] is excluded for OCBC queries because
         //  Alipay is an independent company unrelated to the Deloitte/OCBC/Sanofi group).
-        if (company != null) {
-            Set<String> allowed = buildAllowedCompanies(company, excludeCompanies);
+        if (focusCompany != null) {
+            Set<String> allowed = buildAllowedCompanies(focusCompany, siblings);
             return expanded.stream()
                     .filter(h -> {
                         List<String> cos = h.companies();
                         if (cos.isEmpty()) return true;
                         // Must have the focus company
-                        if (cos.stream().noneMatch(c -> c.equalsIgnoreCase(company))) return false;
+                        if (cos.stream().noneMatch(c -> c.equalsIgnoreCase(focusCompany))) return false;
                         // Must not have any label outside the allowed set
                         return cos.stream().allMatch(
                                 c -> allowed.stream().anyMatch(a -> a.equalsIgnoreCase(c)));
@@ -332,11 +337,11 @@ public class ChatServiceImpl implements ChatService {
      * First occurrence wins (highest score), sorted desc, capped at limit.
      */
     private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg,
-                                         int limit, String company, List<String> excludeCompanies) {
+                                         int limit, String focusCompany, List<String> siblings) {
         LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
         for (String query : queries) {
             float[] vector = embedQuestion(query);
-            qdrantSearchService.search(vector, limit, cfg.getMinScore(), company, excludeCompanies)
+            qdrantSearchService.search(vector, limit, cfg.getMinScore(), focusCompany)
                     .forEach(hit -> seen.putIfAbsent(hit.docId() + ":" + hit.chunkIndex(), hit));
         }
         return seen.values().stream()
@@ -385,7 +390,7 @@ public class ChatServiceImpl implements ChatService {
      *   resolved       → "Insurance Portal System at Sinosig. Used Redis to cache credit checks...
      *                     How did you reduce cost in that system?"
      */
-    private String resolveRetrievalQuery(String question, String history) {
+    private String resolveRetrievalQuery(String question, String history, String focusCompany) {
         if (history == null || history.isBlank()) return question;
 
         String lower = question.toLowerCase();
@@ -411,7 +416,6 @@ public class ChatServiceImpl implements ChatService {
 
         // If the context snippet doesn't carry a company name (e.g. "15 months."),
         // prepend the focus company so the embedding anchors to the right topic.
-        String focusCompany = promptBuilder.extractFocusCompany(question, history);
         if (focusCompany != null && !context.toLowerCase().contains(focusCompany.toLowerCase())) {
             context = focusCompany + " " + context;
         }
@@ -441,15 +445,13 @@ public class ChatServiceImpl implements ChatService {
                 .getOrDefault(focusCompany, List.of());
         if (subgroups.isEmpty()) return queries;
         String original = queries.get(0);
+        String pattern  = "(?i)\\b" + java.util.regex.Pattern.quote(focusCompany) + "\\b";
         List<String> expanded = new ArrayList<>(queries);
         for (String sub : subgroups) {
-            expanded.add(original.replaceAll("(?i)\\b" + java.util.regex.Pattern.quote(focusCompany) + "\\b", sub));
+            String replaced = original.replaceAll(pattern, sub);
+            if (!replaced.equals(original)) expanded.add(replaced);
         }
         return expanded;
-    }
-
-    private String toFilterCompany(String focusCompany) {
-        return focusCompany;
     }
 
     /**
@@ -458,9 +460,8 @@ public class ChatServiceImpl implements ChatService {
      * and any parent firm (e.g. Deloitte for OCBC/Sanofi).
      * Any chunk carrying a label outside this set gets filtered out of retrieval results.
      */
-    private java.util.Set<String> buildAllowedCompanies(String focusCompany,
-                                                         List<String> siblings) {
-        java.util.Set<String> allowed = new java.util.HashSet<>();
+    private Set<String> buildAllowedCompanies(String focusCompany, List<String> siblings) {
+        Set<String> allowed = new HashSet<>();
         allowed.add(focusCompany);
         allowed.addAll(siblings);
         ragProperties.getCompanySubgroups().forEach((parent, subs) -> {
@@ -472,8 +473,9 @@ public class ChatServiceImpl implements ChatService {
         return allowed;
     }
 
-    /** Returns sibling sub-companies to exclude when focusCompany is a sub-project.
-     *  e.g. focusCompany=OCBC → excludes [Sanofi] (both are Deloitte sub-projects). */
+    /** Returns sibling sub-companies for a sub-project focusCompany.
+     *  Siblings are part of the same parent group and are ALLOWED in the post-filter.
+     *  e.g. focusCompany=OCBC → siblings=[Sanofi] (both are Deloitte sub-projects). */
     private List<String> getSiblingCompanies(String focusCompany) {
         if (focusCompany == null) return List.of();
         return ragProperties.getCompanySubgroups().values().stream()

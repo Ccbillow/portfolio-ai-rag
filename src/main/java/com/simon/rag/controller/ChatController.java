@@ -35,11 +35,8 @@ public class ChatController {
             @Valid @RequestBody Dtos.ChatRequest request,
             @AuthenticationPrincipal UserDetails userDetails) {
 
-        Long userId = userDetails instanceof com.simon.rag.security.JwtUserDetails jud ? jud.getUserId() : null;
-        String username = userDetails != null ? userDetails.getUsername() : "anonymous";
-        log.info("Chat request from [{}]: {}", username, request.getQuestion());
-        Vos.ChatResponse response = chatService.ask(request, userId);
-        return Result.success(response);
+        log.info("Chat request from [{}]: {}", username(userDetails), request.getQuestion());
+        return Result.success(chatService.ask(request));
     }
 
     @Operation(summary = "Ask a question — SSE streaming response")
@@ -48,9 +45,11 @@ public class ChatController {
             @Valid @RequestBody Dtos.ChatRequest request,
             @AuthenticationPrincipal UserDetails userDetails) {
 
-        Long userId = userDetails instanceof com.simon.rag.security.JwtUserDetails jud ? jud.getUserId() : null;
-        String username = userDetails != null ? userDetails.getUsername() : "anonymous";
-        log.info("Stream chat request from [{}]", username);
-        return chatService.askStream(request, userId);
+        log.info("Stream chat request from [{}]", username(userDetails));
+        return chatService.askStream(request);
+    }
+
+    private static String username(UserDetails userDetails) {
+        return userDetails != null ? userDetails.getUsername() : "anonymous";
     }
 }

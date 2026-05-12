@@ -14,11 +14,11 @@ public interface ChatService {
      * Ask a question and get a complete (non-streaming) answer.
      * Answer is cached in Redis for identical questions.
      */
-    Vos.ChatResponse ask(Dtos.ChatRequest request, Long userId);
+    Vos.ChatResponse ask(Dtos.ChatRequest request);
 
     /**
      * Ask a question and stream the answer token-by-token via SSE.
      * Used for real-time chat UI experience.
      */
-    SseEmitter askStream(Dtos.ChatRequest request, Long userId);
+    SseEmitter askStream(Dtos.ChatRequest request);
 }

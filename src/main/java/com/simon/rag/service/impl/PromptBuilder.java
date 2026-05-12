@@ -15,14 +15,18 @@ public class PromptBuilder {
     private final RagProperties ragProperties;
 
     public String build(String question, String context) {
-        return build(question, context, QuestionType.BEHAVIORAL, "");
+        return build(question, context, QuestionType.BEHAVIORAL, "", null);
     }
 
     public String build(String question, String context, QuestionType type) {
-        return build(question, context, type, "");
+        return build(question, context, type, "", null);
     }
 
     public String build(String question, String context, QuestionType type, String history) {
+        return build(question, context, type, history, null);
+    }
+
+    public String build(String question, String context, QuestionType type, String history, String focusCompany) {
         String typeHintKey = switch (type) {
             case FACTUAL    -> "type_hint_factual";
             case TECHNICAL  -> "type_hint_technical";
@@ -32,7 +36,8 @@ public class PromptBuilder {
         };
         String typeHint = promptTemplateService.get(typeHintKey);
 
-        String focusCompany = extractFocusCompany(question, history);
+        // Use caller-supplied focusCompany (already computed) to avoid re-scanning history
+        if (focusCompany == null) focusCompany = extractFocusCompany(question, history);
         String companyContextHint = focusCompany != null
                 ? buildCompanyContextHint(focusCompany)
                 : "";
@@ -93,28 +98,10 @@ public class PromptBuilder {
     }
 
     private String findCompany(String text) {
-        if (text.contains("alipay"))   return "Alipay";
-        if (text.contains("sinosig"))  return "Sinosig";
-        if (text.contains("sanofi"))   return "Sanofi";
-        if (text.contains("ocbc"))     return "OCBC";
-        if (text.contains("deloitte")) return "Deloitte";
-        if (text.contains("netease"))  return "NetEase";
-        return null;
+        return ragProperties.getCompanies().stream()
+                .filter(c -> text.contains(c.toLowerCase()))
+                .findFirst()
+                .orElse(null);
     }
 
-    private String extractLastAnswer(String history) {
-        String last = "";
-        for (String line : history.split("\n")) {
-            if (line.trim().startsWith("A: ")) last = line.trim().substring(3).strip();
-        }
-        return last;
-    }
-
-    private String extractLastQuestion(String history) {
-        String last = "";
-        for (String line : history.split("\n")) {
-            if (line.trim().startsWith("Q: ")) last = line.trim().substring(3).strip();
-        }
-        return last;
-    }
 }

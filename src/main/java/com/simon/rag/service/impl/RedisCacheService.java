@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -90,15 +91,23 @@ public class RedisCacheService {
     public void appendConversationHistory(String sessionId, String question, String answer) {
         if (sessionId == null || sessionId.isBlank()) return;
         try {
-            String key   = CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId;
-            String entry = "Q: " + question.strip() + "\nA: " + answer.strip();
-            redisTemplate.opsForList().rightPush(key, entry);
-            redisTemplate.opsForList().trim(key, -MAX_TURNS, -1);
-            redisTemplate.expire(key, HISTORY_TTL_MIN, TimeUnit.MINUTES);
+            String key     = CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId;
+            String turnKey = key + ":turns";
+            String entry   = "Q: " + question.strip() + "\nA: " + answer.strip();
 
-            String turnKey = CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId + ":turns";
-            redisTemplate.opsForValue().increment(turnKey);
-            redisTemplate.expire(turnKey, HISTORY_TTL_MIN, TimeUnit.MINUTES);
+            // Pipeline: all writes in one round-trip, reducing desync risk on partial failure
+            redisTemplate.executePipelined((org.springframework.data.redis.core.RedisCallback<Object>) conn -> {
+                byte[] k    = key.getBytes(StandardCharsets.UTF_8);
+                byte[] tk   = turnKey.getBytes(StandardCharsets.UTF_8);
+                byte[] val  = entry.getBytes(StandardCharsets.UTF_8);
+                long ttlSec = HISTORY_TTL_MIN * 60;
+                conn.listCommands().rPush(k, val);
+                conn.listCommands().lTrim(k, -MAX_TURNS, -1);
+                conn.keyCommands().expire(k, ttlSec);
+                conn.stringCommands().incr(tk);
+                conn.keyCommands().expire(tk, ttlSec);
+                return null;
+            });
         } catch (Exception e) {
             log.warn("History write failed: sessionId={}, err={}", sessionId, e.getMessage());
         }

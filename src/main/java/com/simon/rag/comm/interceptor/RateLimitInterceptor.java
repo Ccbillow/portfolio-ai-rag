@@ -15,6 +15,8 @@ import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
+import org.springframework.scheduling.annotation.Scheduled;
+
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -22,6 +24,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * Per-IP rate limiter for chat endpoints using Bucket4j in-process token buckets.
  * Limits: 5 requests/minute and 20 requests/day per IP.
  * Minute limit is checked first to avoid burning daily quota on rapid-fire bursts.
+ *
+ * Buckets are cleared on a schedule to prevent unbounded map growth:
+ *   - minuteBuckets every 10 min (buckets refill every 1 min anyway)
+ *   - dailyBuckets once per day (midnight UTC)
  */
 @Slf4j
 @Component
@@ -37,6 +43,20 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     private final ConcurrentHashMap<String, Bucket> minuteBuckets = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Bucket> dailyBuckets  = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
+
+    @Scheduled(fixedDelay = 10 * 60 * 1000)
+    public void evictMinuteBuckets() {
+        int size = minuteBuckets.size();
+        minuteBuckets.clear();
+        if (size > 0) log.debug("Evicted {} minute-limit buckets", size);
+    }
+
+    @Scheduled(cron = "0 0 0 * * *")
+    public void evictDailyBuckets() {
+        int size = dailyBuckets.size();
+        dailyBuckets.clear();
+        log.info("Evicted {} daily-limit buckets (midnight reset)", size);
+    }
 
     @Override
     public boolean preHandle(
@@ -88,7 +108,10 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     private String resolveClientIp(HttpServletRequest request) {
         String forwarded = request.getHeader("X-Forwarded-For");
         if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
+            // Use the rightmost IP — it is appended by the nearest trusted proxy (Nginx),
+            // while the leftmost is the client-supplied value and trivially spoofable.
+            String[] parts = forwarded.split(",");
+            return parts[parts.length - 1].trim();
         }
         return request.getRemoteAddr();
     }

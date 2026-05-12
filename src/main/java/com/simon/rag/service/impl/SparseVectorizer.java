@@ -1,5 +1,6 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.config.RagProperties;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -14,7 +15,7 @@ import java.util.Map;
  * (each char is a token) and Latin words (split on non-alphanumeric boundaries).
  *
  * Formula: score(t,d) = (k1+1)*tf / (k1*(1-b + b*|d|/avgLen) + tf)
- * where k1=1.2, b=0.75, avgLen ≈ 80 tokens (fits ~512-char chunks).
+ * where k1=1.2, b=0.75, avgLen derived from chunkSize (~5 chars per English token).
  */
 @Component
 public class SparseVectorizer {
@@ -22,7 +23,11 @@ public class SparseVectorizer {
     private static final int VOCAB_SIZE = 30_000;
     private static final float K1 = 1.2f;
     private static final float B  = 0.75f;
-    private static final float AVG_TOKENS = 80f;
+    private final float avgTokens;
+
+    public SparseVectorizer(RagProperties ragProperties) {
+        this.avgTokens = ragProperties.getEmbedding().getChunkSize() / 5f;
+    }
 
     public record SparseVector(List<Integer> indices, List<Float> values) {
         public boolean isEmpty() { return indices.isEmpty(); }
@@ -38,9 +43,10 @@ public class SparseVectorizer {
         float docLen = tokens.size();
         Map<Integer, Float> sparse = new HashMap<>();
         for (Map.Entry<String, Integer> e : tf.entrySet()) {
-            int idx = Math.abs(e.getKey().hashCode()) % VOCAB_SIZE;
+            // & MAX_VALUE masks the sign bit so Integer.MIN_VALUE.hashCode() never produces a negative index
+            int idx = (e.getKey().hashCode() & Integer.MAX_VALUE) % VOCAB_SIZE;
             float freq = e.getValue();
-            float score = (K1 + 1) * freq / (K1 * (1 - B + B * docLen / AVG_TOKENS) + freq);
+            float score = (K1 + 1) * freq / (K1 * (1 - B + B * docLen / avgTokens) + freq);
             sparse.merge(idx, score, Float::sum);
         }
 

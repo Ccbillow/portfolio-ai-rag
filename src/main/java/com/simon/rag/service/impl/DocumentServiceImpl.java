@@ -43,6 +43,9 @@ public class DocumentServiceImpl implements DocumentService {
                                         Dtos.DocumentUploadRequest request,
                                         Long uploadedBy) {
         String fileName = file.getOriginalFilename();
+        if (fileName == null || fileName.isBlank()) {
+            throw new RuntimeException("Uploaded file has no filename");
+        }
 
         // --- Deduplication: skip if a non-failed record with same filename exists ---
         Document existing = documentMapper.selectOne(
@@ -69,13 +72,13 @@ public class DocumentServiceImpl implements DocumentService {
         // --- Save file to disk first (decouples file lifetime from HTTP request) ---
         String taskId = UUID.randomUUID().toString();
         Path diskPath = Path.of(ragProperties.getUpload().getDir(), taskId);
-        try {
-            Files.write(diskPath, file.getBytes());
+        try (java.io.InputStream in = file.getInputStream()) {
+            Files.copy(in, diskPath);
         } catch (IOException e) {
             throw new RuntimeException("Failed to save uploaded file to disk", e);
         }
 
-        // --- Persist metadata to MySQL ---
+        // --- Persist metadata to MySQL — clean up temp file if this fails ---
         Document doc = new Document()
                 .setFileName(fileName)
                 .setFileType(file.getContentType())
@@ -84,7 +87,12 @@ public class DocumentServiceImpl implements DocumentService {
                 .setStatus(IngestionStatus.PENDING.name())
                 .setTaskId(taskId)
                 .setUploadedBy(uploadedBy);
-        documentMapper.insert(doc);
+        try {
+            documentMapper.insert(doc);
+        } catch (Exception e) {
+            try { Files.deleteIfExists(diskPath); } catch (IOException ignored) {}
+            throw new RuntimeException("Failed to persist document metadata", e);
+        }
 
         redisCacheService.setIngestionStatus(taskId, IngestionStatus.PENDING.name(), 24);
 
@@ -139,12 +147,10 @@ public class DocumentServiceImpl implements DocumentService {
 
     @Override
     public void delete(Long documentId) {
-        try {
-            qdrantSearchService.deleteByDocId(String.valueOf(documentId));
-        } catch (Exception e) {
-            log.warn("Qdrant delete failed for docId={}: {}", documentId, e.getMessage());
-        }
+        // Delete from Qdrant first. If it fails, abort — do NOT remove the MySQL record.
+        // Keeping the MySQL record prevents re-upload from creating duplicate ghost chunks in Qdrant.
+        qdrantSearchService.deleteByDocId(String.valueOf(documentId));
         documentMapper.deleteById(documentId);
-        log.info("Document {} deleted from MySQL and Qdrant", documentId);
+        log.info("Document {} deleted from Qdrant and MySQL", documentId);
     }
 }

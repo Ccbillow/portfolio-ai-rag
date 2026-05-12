@@ -83,8 +83,13 @@ public class IngestionRunner {
                 segments.add(TextSegment.from(rawSegments.get(i).text(), meta));
             }
 
-            // 5. Compute dense embeddings (OpenAI)
-            List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
+            // 5. Compute dense embeddings (OpenAI) — batch to stay within per-request limits
+            List<Embedding> embeddings = new ArrayList<>();
+            int batchSize = 100;
+            for (int start = 0; start < segments.size(); start += batchSize) {
+                List<TextSegment> batch = segments.subList(start, Math.min(start + batchSize, segments.size()));
+                embeddings.addAll(embeddingModel.embedAll(batch).content());
+            }
 
             // Filename-level companies — non-empty means the whole file is scoped to those companies.
             List<String> fileCompanies = extractCompaniesFromText(fileName);
@@ -135,13 +140,14 @@ public class IngestionRunner {
                     docId, IngestionStatus.COMPLETED.name(), segments.size(), null);
             log.info("Ingestion completed: docId={}, chunks={}", docId, segments.size());
 
-            Files.deleteIfExists(filePath);
-
         } catch (Exception e) {
             log.error("Ingestion failed for docId={}", docId, e);
             redisCacheService.setIngestionStatus(taskId, IngestionStatus.FAILED.name());
             documentMapper.updateIngestionResult(
                     docId, IngestionStatus.FAILED.name(), 0, e.getMessage());
+        } finally {
+            try { Files.deleteIfExists(filePath); }
+            catch (Exception ex) { log.warn("Failed to delete temp file {}: {}", filePath, ex.getMessage()); }
         }
     }
 

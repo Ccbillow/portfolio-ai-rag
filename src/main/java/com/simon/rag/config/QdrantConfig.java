@@ -1,14 +1,19 @@
 package com.simon.rag.config;
 
+import io.netty.channel.ChannelOption;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.netty.http.client.HttpClient;
 
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Configuration
@@ -31,8 +36,14 @@ public class QdrantConfig {
 
     @Bean
     public WebClient qdrantWebClient() {
+        HttpClient httpClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5_000)
+                .doOnConnected(conn -> conn.addHandlerLast(
+                        new ReadTimeoutHandler(10, TimeUnit.SECONDS)));
+
         WebClient.Builder builder = WebClient.builder()
-                .baseUrl("http://" + host + ":" + httpPort);
+                .baseUrl("http://" + host + ":" + httpPort)
+                .clientConnector(new ReactorClientHttpConnector(httpClient));
         if (apiKey != null && !apiKey.isBlank()) {
             builder.defaultHeader("api-key", apiKey);
         }

@@ -17,10 +17,12 @@ public final class Dtos {
         @Size(max = 300, message = "Question must not exceed 300 characters")
         private String question;
 
-        /** Optional — filter retrieval to a specific knowledge category */
+        /** Optional — reserved for future category-scoped retrieval; not currently applied */
+        @Size(max = 50, message = "Category must not exceed 50 characters")
         private String category;
 
-        /** Optional — session ID for future multi-turn conversation grouping */
+        /** Optional — groups turns into a conversation for context tracking */
+        @Size(max = 64, message = "Session ID must not exceed 64 characters")
         private String sessionId;
     }
 

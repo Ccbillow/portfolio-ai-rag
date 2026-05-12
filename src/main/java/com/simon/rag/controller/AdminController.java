@@ -45,11 +45,7 @@ public class AdminController {
             @PathVariable String name,
             @Valid @RequestBody Dtos.UpdatePromptRequest request) {
         log.info("Admin updating prompt template: {}", name);
-        promptTemplateService.update(name, request.getContent());
-        PromptTemplate updated = promptTemplateService.listAll().stream()
-                .filter(t -> t.getName().equals(name))
-                .findFirst()
-                .orElseThrow();
+        PromptTemplate updated = promptTemplateService.update(name, request.getContent());
         return Result.success(toVo(updated));
     }
 

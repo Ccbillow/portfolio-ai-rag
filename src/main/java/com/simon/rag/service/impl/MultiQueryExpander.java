@@ -18,7 +18,7 @@ public class MultiQueryExpander {
 
     private final ChatLanguageModel chatLanguageModel;
 
-    @Value("${rag.multi-query.enabled:true}")
+    @Value("${rag.multi-query.enabled:false}")
     private boolean enabled;
 
     private static final String PROMPT = """

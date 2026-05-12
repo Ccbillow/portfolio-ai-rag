@@ -37,6 +37,18 @@ public class JwtUtil {
                 .compact();
     }
 
+    public record TokenClaims(String username, String role) {}
+
+    /**
+     * Parses the token once, validates signature + expiry, and returns both fields.
+     * Throws JwtException / IllegalArgumentException on invalid token — callers must catch.
+     * Preferred over the separate extractUsername/extractRole pair to avoid triple parsing.
+     */
+    public TokenClaims validateAndExtract(String token) {
+        Claims claims = parseClaims(token);
+        return new TokenClaims(claims.getSubject(), claims.get("role", String.class));
+    }
+
     public String extractUsername(String token) {
         return parseClaims(token).getSubject();
     }
