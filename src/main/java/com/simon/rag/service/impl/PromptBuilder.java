@@ -1,13 +1,18 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.config.RagProperties;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
 public class PromptBuilder {
 
     private final PromptTemplateService promptTemplateService;
+    private final RagProperties ragProperties;
 
     public String build(String question, String context) {
         return build(question, context, QuestionType.BEHAVIORAL, "");
@@ -28,15 +33,8 @@ public class PromptBuilder {
         String typeHint = promptTemplateService.get(typeHintKey);
 
         String focusCompany = extractFocusCompany(question, history);
-        String subProjectExclusion = switch (focusCompany != null ? focusCompany : "") {
-            case "Sanofi" -> " Exclude all OCBC content. Do NOT mention Kafka, Personal Deposit System, or any OCBC-specific term, even if they appear in Context.";
-            case "OCBC"   -> " Exclude all Sanofi content. Do NOT mention reverse-match, XMind, or any Sanofi-specific term, even if they appear in Context.";
-            default       -> "";
-        };
         String companyContextHint = focusCompany != null
-                ? "\nConversation context: the current topic is " + focusCompany + ". " +
-                  "Apply COMPANY SCOPE to " + focusCompany + " even when the question uses pronouns (it / that / this / there)." +
-                  subProjectExclusion
+                ? buildCompanyContextHint(focusCompany)
                 : "";
 
         String historySection = (history == null || history.isBlank()) ? "" :
@@ -50,20 +48,32 @@ public class PromptBuilder {
                 .replace("{{question}}", question);
     }
 
+    private String buildCompanyContextHint(String focusCompany) {
+        // List every other known company so the LLM ignores their content when it leaks into context
+        // via mixed-label chunks (e.g. an overview chunk tagged ["OCBC","Alipay","Sanofi",...]).
+        List<String> others = ragProperties.getCompanies().stream()
+                .filter(c -> !c.equalsIgnoreCase(focusCompany))
+                .collect(Collectors.toList());
+        String exclusion = others.isEmpty() ? "" :
+                " Use ONLY " + focusCompany + "-related facts from the Context." +
+                " If the Context contains information about " + String.join(", ", others) +
+                ", ignore it completely — do not use it in your answer.";
+        return "\nConversation context: the current topic is " + focusCompany + ". " +
+               "Apply COMPANY SCOPE to " + focusCompany +
+               " even when the question uses pronouns (it / that / this / there)." +
+               exclusion;
+    }
+
     String extractFocusCompany(String question, String history) {
         // Current question always takes priority
         String fromQuestion = findCompany(question.toLowerCase());
         if (fromQuestion != null) return fromQuestion;
 
-        // Only use history when question is ambiguous (pronoun reference)
+        // Fallback: use conversation history — interview sessions typically stay on one topic,
+        // so the last explicitly named company is almost always the correct context.
+        // Scan Q: lines first (user questions are authoritative);
+        // A: lines are a secondary fallback only.
         if (history == null || history.isBlank()) return null;
-        boolean hasAmbiguity = question.toLowerCase()
-                .matches(".*(\\bit\\b|\\bthat\\b|\\bthere\\b|\\bthis\\b|\\bthey\\b|\\bthose\\b).*");
-        if (!hasAmbiguity) return null;
-
-        // Scan Q: (user questions) before A: (AI answers) — user questions are authoritative;
-        // AI answers may be wrong and would otherwise poison subsequent history lookups.
-        // Within each pass, scan most-recent to oldest so follow-up chains resolve correctly.
         String[] lines = history.split("\n");
         for (int i = lines.length - 1; i >= 0; i--) {
             String line = lines[i].trim();

@@ -55,5 +55,7 @@ public class RagProperties {
         /** Final chunks kept after reranking, fed to LLM */
         private int topN = 3;
         private String model = "rerank-v3.5";
+        /** Drop reranked chunks below this score; always keeps at least 1 */
+        private double minRerankScore = 0.1;
     }
 }

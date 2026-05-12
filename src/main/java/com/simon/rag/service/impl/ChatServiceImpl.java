@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -94,7 +95,9 @@ public class ChatServiceImpl implements ChatService {
         String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
         String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
         List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
-        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, toFilterCompany(focusCompany));
+        String filterCompany  = toFilterCompany(focusCompany);
+        List<String> siblings = getSiblingCompanies(filterCompany);
+        List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, filterCompany, siblings);
 
         if (hits.isEmpty()) {
             return Vos.ChatResponse.builder()
@@ -185,7 +188,9 @@ public class ChatServiceImpl implements ChatService {
             String retrievalQuery = resolveRetrievalQuery(request.getQuestion(), history);
             String focusCompany   = promptBuilder.extractFocusCompany(request.getQuestion(), history);
             List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
-            List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, toFilterCompany(focusCompany));
+            String filterCompany  = toFilterCompany(focusCompany);
+            List<String> siblings = getSiblingCompanies(filterCompany);
+            List<SearchHit> hits  = retrieve(retrievalQuery, queries, cfg, filterCompany, siblings);
             log.info("Stream — {} hits after retrieval pipeline", hits.size());
 
             if (hits.isEmpty()) {
@@ -266,7 +271,9 @@ public class ChatServiceImpl implements ChatService {
      * Both paths optionally feed into Cohere Reranker, then expand neighbors.
      * company filter isolates results to a specific employer/client.
      */
-    private List<SearchHit> retrieve(String question, List<String> queries, RagProperties.Embedding cfg, String company) {
+    private List<SearchHit> retrieve(String question, List<String> queries,
+                                      RagProperties.Embedding cfg, String company,
+                                      List<String> excludeCompanies) {
         RagProperties.Reranker rerankCfg = ragProperties.getReranker();
         boolean useHybrid = ragProperties.getHybridSearch().isEnabled();
         int fetchLimit = rerankCfg.isEnabled() ? rerankCfg.getCandidateK() : cfg.getTopK();
@@ -278,17 +285,17 @@ public class ChatServiceImpl implements ChatService {
                 float[] dense = embedQuestion(q);
                 SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(q);
                 if (!sparse.isEmpty()) {
-                    qdrantSearchService.hybridSearch(dense, sparse, fetchLimit, company)
+                    qdrantSearchService.hybridSearch(dense, sparse, fetchLimit, company, excludeCompanies)
                             .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
                 } else {
                     log.warn("Sparse vector empty for query '{}', using dense only", q);
-                    qdrantSearchService.search(dense, fetchLimit, cfg.getMinScore(), company)
+                    qdrantSearchService.search(dense, fetchLimit, cfg.getMinScore(), company, excludeCompanies)
                             .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
                 }
             }
             candidates = new ArrayList<>(seen.values());
         } else {
-            candidates = multiSearch(queries, cfg, fetchLimit, company);
+            candidates = multiSearch(queries, cfg, fetchLimit, company, excludeCompanies);
         }
 
         if (candidates.isEmpty()) return List.of();
@@ -297,18 +304,39 @@ public class ChatServiceImpl implements ChatService {
                 ? cohereRerankService.rerank(question, candidates)
                 : candidates;
 
-        return expandWithNeighbours(ranked);
+        List<SearchHit> expanded = expandWithNeighbours(ranked);
+
+        // Company-scoped filter: keep only chunks that belong to the focus company's "world".
+        // A chunk is excluded if it carries a label for an unrelated independent company
+        // (e.g. ["Alipay","OCBC","Sanofi","Deloitte"] is excluded for OCBC queries because
+        //  Alipay is an independent company unrelated to the Deloitte/OCBC/Sanofi group).
+        if (company != null) {
+            Set<String> allowed = buildAllowedCompanies(company, excludeCompanies);
+            return expanded.stream()
+                    .filter(h -> {
+                        List<String> cos = h.companies();
+                        if (cos.isEmpty()) return true;
+                        // Must have the focus company
+                        if (cos.stream().noneMatch(c -> c.equalsIgnoreCase(company))) return false;
+                        // Must not have any label outside the allowed set
+                        return cos.stream().allMatch(
+                                c -> allowed.stream().anyMatch(a -> a.equalsIgnoreCase(c)));
+                    })
+                    .collect(Collectors.toList());
+        }
+        return expanded;
     }
 
     /**
      * Embeds each query, searches Qdrant, merges by (docId:chunkIndex).
      * First occurrence wins (highest score), sorted desc, capped at limit.
      */
-    private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg, int limit, String company) {
+    private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg,
+                                         int limit, String company, List<String> excludeCompanies) {
         LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
         for (String query : queries) {
             float[] vector = embedQuestion(query);
-            qdrantSearchService.search(vector, limit, cfg.getMinScore(), company)
+            qdrantSearchService.search(vector, limit, cfg.getMinScore(), company, excludeCompanies)
                     .forEach(hit -> seen.putIfAbsent(hit.docId() + ":" + hit.chunkIndex(), hit));
         }
         return seen.values().stream()
@@ -422,6 +450,37 @@ public class ChatServiceImpl implements ChatService {
 
     private String toFilterCompany(String focusCompany) {
         return focusCompany;
+    }
+
+    /**
+     * Returns the set of company labels that are "legitimate" for a given focus company.
+     * Includes: the focus company itself, its siblings (other sub-projects of the same parent),
+     * and any parent firm (e.g. Deloitte for OCBC/Sanofi).
+     * Any chunk carrying a label outside this set gets filtered out of retrieval results.
+     */
+    private java.util.Set<String> buildAllowedCompanies(String focusCompany,
+                                                         List<String> siblings) {
+        java.util.Set<String> allowed = new java.util.HashSet<>();
+        allowed.add(focusCompany);
+        allowed.addAll(siblings);
+        ragProperties.getCompanySubgroups().forEach((parent, subs) -> {
+            // Add parent firm when focusCompany is a sub-project (e.g. OCBC → Deloitte)
+            if (subs.contains(focusCompany)) allowed.add(parent);
+            // Add sub-projects when focusCompany is the parent (e.g. Deloitte → OCBC, Sanofi)
+            if (parent.equalsIgnoreCase(focusCompany)) allowed.addAll(subs);
+        });
+        return allowed;
+    }
+
+    /** Returns sibling sub-companies to exclude when focusCompany is a sub-project.
+     *  e.g. focusCompany=OCBC → excludes [Sanofi] (both are Deloitte sub-projects). */
+    private List<String> getSiblingCompanies(String focusCompany) {
+        if (focusCompany == null) return List.of();
+        return ragProperties.getCompanySubgroups().values().stream()
+                .filter(subs -> subs.contains(focusCompany))
+                .flatMap(java.util.Collection::stream)
+                .filter(c -> !c.equals(focusCompany))
+                .toList();
     }
 
     private boolean isQuotaError(Throwable e) {

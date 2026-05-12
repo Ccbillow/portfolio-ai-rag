@@ -68,13 +68,24 @@ public class CohereRerankService {
                 return candidates.stream().limit(cfg.getTopN()).collect(Collectors.toList());
             }
 
-            List<SearchHit> reranked = response.results().stream()
+            double minScore = cfg.getMinRerankScore();
+            List<RerankResult> results = response.results();
+
+            List<RerankResult> kept = results.stream()
+                    .filter(r -> r.relevanceScore() >= minScore)
+                    .collect(Collectors.toList());
+
+            // Always keep at least the top-1 to avoid empty context
+            if (kept.isEmpty()) kept = results.subList(0, 1);
+
+            List<SearchHit> reranked = kept.stream()
                     .map(r -> candidates.get(r.index()))
                     .collect(Collectors.toList());
 
-            log.info("Reranked {}/{} candidates → top-{}: scores {}",
-                    candidates.size(), documents.size(), reranked.size(),
-                    response.results().stream()
+            log.info("Reranked {}/{} candidates → kept {}/{} (minScore={}): scores {}",
+                    candidates.size(), documents.size(),
+                    kept.size(), results.size(), minScore,
+                    results.stream()
                             .map(r -> String.format("%.3f", r.relevanceScore()))
                             .collect(Collectors.joining(", ")));
 

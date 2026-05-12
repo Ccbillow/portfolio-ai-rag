@@ -75,12 +75,15 @@ rag:
     enabled: true
   multi-query:
     enabled: false
+  rate-limit:
+    enabled: true
   reranker:
     enabled: true
     candidate-k: 10
     top-n: 3
     model: rerank-v3.5
     ttl-hours: 24
+    min-rerank-score: 0.1
 
 logging:
   level:

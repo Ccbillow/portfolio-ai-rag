@@ -9,6 +9,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
@@ -30,6 +31,9 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     private static final int  MINUTE_CAPACITY = 5;
     private static final int  DAILY_CAPACITY  = 20;
 
+    @Value("${rag.rate-limit.enabled:true}")
+    private boolean enabled;
+
     private final ConcurrentHashMap<String, Bucket> minuteBuckets = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Bucket> dailyBuckets  = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
@@ -39,6 +43,8 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             @NonNull HttpServletRequest request,
             @NonNull HttpServletResponse response,
             @NonNull Object handler) throws Exception {
+
+        if (!enabled) return true;
 
         String ip = resolveClientIp(request);
 

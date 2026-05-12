@@ -112,10 +112,14 @@ public class IngestionRunner {
                 payload.put("chunkIndex",  meta.getString("chunkIndex"));
                 payload.put("chunkTotal",  meta.getString("chunkTotal"));
 
-                // Filename companies take priority; fall back to scanning the chunk text itself.
-                List<String> companies = fileCompanies.isEmpty()
-                        ? extractCompaniesFromText(seg.text())
-                        : fileCompanies;
+                // Union of filename companies and companies found in chunk text.
+                // Filename tag (e.g. "Deloitte") is always the base; chunk text scan adds
+                // sub-project labels (e.g. "OCBC", "Sanofi") on top of it.
+                // If filename has no company, chunk text alone determines the tag.
+                List<String> companies = new ArrayList<>(fileCompanies);
+                extractCompaniesFromText(seg.text()).stream()
+                        .filter(c -> !companies.contains(c))
+                        .forEach(companies::add);
                 if (!companies.isEmpty()) payload.put("companies", companies);
 
                 points.add(new QdrantSearchService.PointData(

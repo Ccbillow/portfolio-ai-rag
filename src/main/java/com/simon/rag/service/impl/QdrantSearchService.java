@@ -57,7 +57,8 @@ public class QdrantSearchService {
      * Dense-only vector search using named "dense" vector.
      * Pass company (e.g. "Alipay") to restrict results to that company's documents.
      */
-    public List<SearchHit> search(float[] queryVector, int topK, double minScore, String company) {
+    public List<SearchHit> search(float[] queryVector, int topK, double minScore,
+                                   String company, List<String> excludeCompanies) {
         Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("vector", Map.of("name", "dense", "vector", queryVector));
         body.put("limit", topK);
@@ -65,7 +66,7 @@ public class QdrantSearchService {
         body.put("with_vector", false);
         body.put("score_threshold", minScore);
         if (company != null && !company.isBlank()) {
-            body.put("filter", companyFilter(company));
+            body.put("filter", companyFilter(company, excludeCompanies));
         }
 
         SearchResponse response = qdrantWebClient.post()
@@ -85,8 +86,12 @@ public class QdrantSearchService {
         return hits;
     }
 
+    public List<SearchHit> search(float[] queryVector, int topK, double minScore, String company) {
+        return search(queryVector, topK, minScore, company, List.of());
+    }
+
     public List<SearchHit> search(float[] queryVector, int topK, double minScore) {
-        return search(queryVector, topK, minScore, null);
+        return search(queryVector, topK, minScore, null, List.of());
     }
 
     /**
@@ -94,7 +99,8 @@ public class QdrantSearchService {
      * Returns RRF-ranked results — do NOT apply cosine min-score threshold here.
      * Pass company to restrict to that company's documents.
      */
-    public List<SearchHit> hybridSearch(float[] denseVector, SparseVector sparseVec, int limit, String company) {
+    public List<SearchHit> hybridSearch(float[] denseVector, SparseVector sparseVec, int limit,
+                                         String company, List<String> excludeCompanies) {
         int prefetchLimit = limit * 2;
 
         Map<String, Object> densePrefetch = new java.util.LinkedHashMap<>();
@@ -108,7 +114,7 @@ public class QdrantSearchService {
         sparsePrefetch.put("limit", prefetchLimit);
 
         if (company != null && !company.isBlank()) {
-            Map<String, Object> filter = companyFilter(company);
+            Map<String, Object> filter = companyFilter(company, excludeCompanies);
             densePrefetch.put("filter", filter);
             sparsePrefetch.put("filter", filter);
         }
@@ -141,8 +147,12 @@ public class QdrantSearchService {
         return hits;
     }
 
+    public List<SearchHit> hybridSearch(float[] denseVector, SparseVector sparseVec, int limit, String company) {
+        return hybridSearch(denseVector, sparseVec, limit, company, List.of());
+    }
+
     public List<SearchHit> hybridSearch(float[] denseVector, SparseVector sparseVec, int limit) {
-        return hybridSearch(denseVector, sparseVec, limit, null);
+        return hybridSearch(denseVector, sparseVec, limit, null, List.of());
     }
 
     /**
@@ -250,15 +260,17 @@ public class QdrantSearchService {
     }
 
     /**
-     * Qdrant filter: chunks where the companies array contains the target company,
-     * OR chunks with no companies tag (general/shared documents).
+     * Qdrant filter: chunks where companies contains the target company (or is empty).
+     * Sibling exclusion is intentionally NOT done here — must_not would kill mixed-label chunks
+     * (e.g. ["OCBC","Sanofi"] from interview-qa.md) that legitimately belong to both.
+     * Sibling exclusion is handled in ChatServiceImpl.retrieve() post-expansion filter instead.
      */
-    private Map<String, Object> companyFilter(String company) {
-        return Map.of(
-                "should", List.of(
-                        Map.of("key", "companies", "match", Map.of("any", List.of(company))),
-                        Map.of("is_empty", Map.of("key", "companies"))
-                )
-        );
+    private Map<String, Object> companyFilter(String company, List<String> excludeCompanies) {
+        Map<String, Object> filter = new java.util.LinkedHashMap<>();
+        filter.put("should", List.of(
+                Map.of("key", "companies", "match", Map.of("any", List.of(company))),
+                Map.of("is_empty", Map.of("key", "companies"))
+        ));
+        return filter;
     }
 }
