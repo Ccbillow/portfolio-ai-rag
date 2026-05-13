@@ -46,3 +46,6 @@ dist/
 
 # ===== RAG eval / test scripts (local only) =====
 docs/test/
+
+# ===== claude skills =====
+claude-skills/
