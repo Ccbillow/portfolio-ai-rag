@@ -1,6 +1,7 @@
 package com.simon.rag.service.impl;
 
 import com.simon.rag.comm.constant.CacheConstant;
+import com.simon.rag.comm.enums.QuestionType;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.vo.Vos;

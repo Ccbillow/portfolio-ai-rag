@@ -1,7 +1,9 @@
 package com.simon.rag.domain.vo;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -13,6 +15,8 @@ public final class Vos {
 
     @Data
     @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class ChatResponse {
         private String answer;
         private List<SourceChunk> sources;

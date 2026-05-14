@@ -1,5 +1,6 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.comm.enums.QuestionType;
 import com.simon.rag.config.RagProperties;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
