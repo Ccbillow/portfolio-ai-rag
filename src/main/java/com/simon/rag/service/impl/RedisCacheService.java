@@ -60,7 +60,7 @@ public class RedisCacheService {
     // ----------------------------------------------------------------
 
     private static final int  MAX_TURNS         = 2;
-    private static final int  SESSION_TURN_LIMIT = 30;
+    private static final int  SESSION_TURN_LIMIT = 15;
     private static final long HISTORY_TTL_MIN    = 60;
 
     public String getConversationHistory(String sessionId) {

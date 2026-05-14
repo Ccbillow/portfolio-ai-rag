@@ -30,6 +30,12 @@ public class QuestionClassifier {
             "suggest (?:\\w+ ){0,3}questions?|generate (?:\\w+ ){0,3}questions?|" +
             "list (?:\\w+ ){0,3}questions?|what questions (?:should|can|would))\\b");
 
+    private static final Pattern CONTACT_REDIRECT_PATTERN = Pattern.compile(
+            "(?i)(\\bphone\\s*(number)?\\b|\\bemail\\s*(address)?\\b|" +
+            "\\bcontact\\s*(number|detail|info|method)\\b|" +
+            "how (can|do|should) (i|we|you) (reach|contact|call|email)|" +
+            "\\breach you\\b|\\bget in touch\\b|\\bhow to contact\\b)");
+
     private static final Pattern STRATEGIC_PATTERN = Pattern.compile(
             "(?i)\\b(salary|salaries|compensation|package|pay rate|ctc|" +
             "how much (do you|are you|would you|did you)|" +
@@ -51,7 +57,7 @@ public class QuestionClassifier {
             "what (type|kind|sort) of (role|job|work|position|contact|communication)|" +
             "which (company|role|city|team)|" +
             "do you (have|hold|currently|mind)|" +
-            "would you (consider|accept|be)|" +
+            "would you (consider|accept|be|like|prefer)|" +
             "are you (based|located|in australia|in sydney|a pr|an? |currently|" +
                      "available|flexible|open|willing|able|considering)|" +
             "is (remote|hybrid|on.?site|relocation|wfh|working from home)|" +
@@ -104,6 +110,10 @@ public class QuestionClassifier {
         if (STRATEGIC_PATTERN.matcher(trimmed).find())
             return QuestionType.STRATEGIC;
 
+        // 3.5. CONTACT_REDIRECT — phone / email → redirect to resume
+        if (CONTACT_REDIRECT_PATTERN.matcher(trimmed).find())
+            return QuestionType.CONTACT_REDIRECT;
+
         // 4. FACTUAL
         if (FACTUAL_PATTERN.matcher(trimmed).find())
             return QuestionType.FACTUAL;
@@ -128,6 +138,8 @@ public class QuestionClassifier {
             case OUT_OF_SCOPE ->
                 "That's outside what I can help with here. " +
                 "Feel free to ask about my engineering background, projects, or technical experience.";
+            case CONTACT_REDIRECT ->
+                "For contact details, please download my resume — the link is on this page.";
             case STRATEGIC    ->
                 "That's a great topic to explore together. " +
                 "I'd prefer to discuss specifics in our conversation — happy to align on expectations then.";
