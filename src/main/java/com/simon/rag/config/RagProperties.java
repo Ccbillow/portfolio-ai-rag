@@ -29,10 +29,10 @@ public class RagProperties {
 
     @Data
     public static class Embedding {
-        private int chunkSize = 512;
-        private int chunkOverlap = 60;
-        private int topK = 3;
-        private double minScore = 0.3;
+        private int chunkSize = 800;
+        private int chunkOverlap = 100;
+        private int topK = 4;
+        private double minScore = 0.25;
     }
 
     @Data
@@ -56,6 +56,6 @@ public class RagProperties {
         private int topN = 3;
         private String model = "rerank-v3.5";
         /** Drop reranked chunks below this score; always keeps at least 1 */
-        private double minRerankScore = 0.1;
+        private double minRerankScore = 0.18;
     }
 }

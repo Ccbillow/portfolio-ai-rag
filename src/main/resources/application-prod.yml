@@ -64,6 +64,7 @@ rag:
     candidate-k: 10
     top-n: 5
     model: rerank-v3.5
+    min-rerank-score: 0.18
   cache:
     enabled: true
 

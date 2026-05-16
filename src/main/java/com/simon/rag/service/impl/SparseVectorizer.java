@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Converts text to a BM25-style sparse vector (no IDF — single-document scoring only).
@@ -20,9 +21,24 @@ import java.util.Map;
 @Component
 public class SparseVectorizer {
 
-    private static final int VOCAB_SIZE = 30_000;
+    private static final int VOCAB_SIZE = 65_536;
     private static final float K1 = 1.2f;
     private static final float B  = 0.75f;
+
+    // Common English words with no discriminative value for technical resume retrieval.
+    // Filtering these makes rare technical terms (SofaBoot, MAT, reverse-match) dominate
+    // BM25 scores instead of being diluted by high-frequency noise words.
+    private static final Set<String> STOP_WORDS = Set.of(
+            "the", "a", "an", "and", "or", "but", "not", "no",
+            "in", "on", "at", "to", "for", "of", "with", "by", "from", "into", "about",
+            "is", "are", "was", "were", "be", "been", "being", "am",
+            "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
+            "it", "its", "this", "that", "these", "those",
+            "i", "my", "me", "we", "our", "you", "your", "he", "she", "they", "them",
+            "as", "if", "so", "also", "then", "than", "when", "which", "who", "what",
+            "all", "each", "more", "some", "such", "there", "their", "they"
+    );
+
     private final float avgTokens;
 
     public SparseVectorizer(RagProperties ragProperties) {
@@ -75,7 +91,10 @@ public class SparseVectorizer {
     }
 
     private void flushLatin(StringBuilder buf, List<String> out) {
-        if (buf.length() >= 2) out.add(buf.toString());
+        if (buf.length() >= 2) {
+            String token = buf.toString();
+            if (!STOP_WORDS.contains(token)) out.add(token);
+        }
         buf.setLength(0);
     }
 }

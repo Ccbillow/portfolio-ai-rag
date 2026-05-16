@@ -362,6 +362,30 @@ Question: {{question}}
 Answer:'
 WHERE name = 'system_prompt';
 
+UPDATE prompt_template SET version = 4, content =
+'STRUCTURE: blank line between every distinct point or project. No background. No transitions. Short sentences — ≤20 words each, no subordinate clauses.
+
+"Tell me about your work / experience at X" question → exactly 3 sentences, blank line between each:
+  Sentence 1 — your role / what you owned.
+  Sentence 2 — the ONE most significant thing you did.
+  Sentence 3 — concrete outcome (numbers if available).
+  Do NOT add production incidents, test rewrites, or secondary projects unless explicitly asked.
+
+Role / Responsibility question → write 3 bare sentences, blank line between each:
+  Sentence 1 — what you owned.
+  Sentence 2 — key thing you did.
+  Sentence 3 — concrete outcome (numbers if available).
+  Do NOT label with Role:, Action:, Result: — just write the sentences.
+
+Multiple projects at one company → MAXIMUM 1 sentence per project, blank line between each. Hard limit.
+
+Multiple companies (e.g. "what projects have you done") → ONE sentence per company, blank line between each. Include ALL companies from Context.
+
+Advantage / Strength / Skills question → Max 4 points. One point per paragraph: keyword or phrase first, then 1 evidence sentence (≤20 words, no examples). Blank line between each point.
+
+Always: concrete tech names and numbers over vague descriptions.'
+WHERE name = 'type_hint_technical';
+
 UPDATE prompt_template SET version = 6, content =
 'LENGTH: 1 sentence, ≤12 words. Answer ONLY the specific fact asked. Nothing else.
 ENTITY: When the question names a location, country, or subject ("in Australia", "at Alipay"), include that name in your answer.
