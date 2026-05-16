@@ -29,8 +29,8 @@ public class RagProperties {
 
     @Data
     public static class Embedding {
-        private int chunkSize = 800;
-        private int chunkOverlap = 100;
+        private int chunkSize = 1000;
+        private int chunkOverlap = 150;
         private int topK = 4;
         private double minScore = 0.25;
     }

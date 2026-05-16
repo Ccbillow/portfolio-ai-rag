@@ -310,15 +310,13 @@ public class ChatServiceImpl implements ChatService {
                 ? cohereRerankService.rerank(question, candidates)
                 : candidates;
 
-        List<SearchHit> expanded = expandWithNeighbours(ranked);
-
         // Company-scoped filter: keep only chunks that belong to the focus company's "world".
         // A chunk is excluded if it carries a label for an unrelated independent company
         // (e.g. ["Alipay","OCBC","Sanofi","Deloitte"] is excluded for OCBC queries because
         //  Alipay is an independent company unrelated to the Deloitte/OCBC/Sanofi group).
         if (focusCompany != null) {
             Set<String> allowed = buildAllowedCompanies(focusCompany, siblings);
-            return expanded.stream()
+            return ranked.stream()
                     .filter(h -> {
                         List<String> cos = h.companies();
                         if (cos.isEmpty()) return true;
@@ -330,7 +328,7 @@ public class ChatServiceImpl implements ChatService {
                     })
                     .collect(Collectors.toList());
         }
-        return expanded;
+        return ranked;
     }
 
     /**
@@ -349,28 +347,6 @@ public class ChatServiceImpl implements ChatService {
                 .sorted(Comparator.comparingDouble(SearchHit::score).reversed())
                 .limit(limit)
                 .collect(Collectors.toList());
-    }
-
-    /**
-     * For each retrieved hit, also fetches the chunk immediately before and after it
-     * (same document). Keeps insertion order so original hits appear first.
-     */
-    private List<SearchHit> expandWithNeighbours(List<SearchHit> hits) {
-        LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
-        for (SearchHit hit : hits) {
-            seen.put(hit.docId() + ":" + hit.chunkIndex(), hit);
-            for (int delta : new int[]{-1, 1}) {
-                int neighbourIdx = hit.chunkIndex() + delta;
-                if (neighbourIdx < 0) continue;
-                String nKey = hit.docId() + ":" + neighbourIdx;
-                if (!seen.containsKey(nKey)) {
-                    List<SearchHit> neighbours =
-                            qdrantSearchService.fetchByDocIdAndChunkIndex(hit.docId(), neighbourIdx);
-                    if (!neighbours.isEmpty()) seen.put(nKey, neighbours.get(0));
-                }
-            }
-        }
-        return new ArrayList<>(seen.values());
     }
 
     // ----------------------------------------------------------------

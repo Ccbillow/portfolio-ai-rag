@@ -63,8 +63,8 @@ rag:
       - OCBC
       - Sanofi
   embedding:
-    chunk-size: 800
-    chunk-overlap: 100
+    chunk-size: 1000
+    chunk-overlap: 150
     top-k: 4
     min-score: 0.25
   upload:
