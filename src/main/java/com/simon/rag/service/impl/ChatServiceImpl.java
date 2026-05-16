@@ -51,7 +51,7 @@ public class ChatServiceImpl implements ChatService {
     private String modelName;
 
     private static final String SESSION_LIMIT_MESSAGE =
-            "You've reached the 30-question limit for this session. Please refresh the page to start a new conversation.";
+            "You've reached the question limit for this session. Please refresh the page to start a new conversation.";
 
     /**
      * Shared result of the pre-LLM pipeline steps (gate checks + retrieval).
