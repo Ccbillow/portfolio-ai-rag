@@ -1,0 +1,24 @@
+sequenceDiagram
+    actor Browser
+    participant RL as RateLimitInterceptor
+    participant API as Spring Boot
+
+    Browser->>RL: POST /api/chat/stream
+
+    RL->>RL: Resolve IP from X-Forwarded-For (rightmost) or RemoteAddr
+
+    RL->>RL: Per-minute bucket (5 req/min per IP)
+    alt Minute limit exceeded
+        RL-->>Browser: 429 RATE_LIMITED
+    end
+
+    RL->>RL: Daily bucket (20 req/day per IP)
+    alt Daily limit exceeded
+        RL-->>Browser: 429 DAILY_RATE_LIMITED
+    end
+
+    RL->>API: Pass through
+    API-->>Browser: Normal response
+
+    Note over RL: Minute buckets cleared every 10 min
+    Note over RL: Daily buckets cleared at midnight UTC

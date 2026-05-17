@@ -1,0 +1,49 @@
+sequenceDiagram
+    actor Browser
+    participant API as Spring Boot
+    participant QC as QuestionClassifier
+
+    Browser->>API: question text
+    API->>QC: classify(question)
+
+    QC->>QC: Check length — too short or bare word
+    alt INVALID
+        QC-->>API: earlyReturn — "Could you rephrase?"
+        API-->>Browser: message + done
+    end
+
+    QC->>QC: Match OUT_OF_SCOPE pattern (weather / news / recipes...)
+    alt OUT_OF_SCOPE
+        QC-->>API: earlyReturn — "That's outside what I can help with."
+        API-->>Browser: message + done
+    end
+
+    QC->>QC: Match STRATEGIC pattern (salary / weaknesses / conflict...)
+    alt STRATEGIC
+        QC-->>API: earlyReturn — "Happy to discuss in our conversation."
+        API-->>Browser: message + done
+    end
+
+    QC->>QC: Match CONTACT pattern (phone / email / how to contact...)
+    alt CONTACT_REDIRECT
+        QC-->>API: earlyReturn — "Please download my resume."
+        API-->>Browser: message + done
+    end
+
+    QC->>QC: Match FACTUAL pattern (how long / when / where are you...)
+    alt FACTUAL
+        QC-->>API: FACTUAL — strict citation prompt
+    end
+
+    QC->>QC: Match BEHAVIORAL_PRE ("Tell me about a time...")
+    alt BEHAVIORAL
+        QC-->>API: BEHAVIORAL — STAR structure prompt
+    end
+
+    QC->>QC: Match TECHNICAL pattern (architecture / Redis / performance...)
+    alt TECHNICAL
+        QC-->>API: TECHNICAL — explain approach prompt
+    end
+
+    QC-->>API: BEHAVIORAL (default)
+    API->>API: Continue to retrieval pipeline

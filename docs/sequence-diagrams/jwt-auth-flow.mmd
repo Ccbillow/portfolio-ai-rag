@@ -1,0 +1,38 @@
+sequenceDiagram
+    actor Client
+    participant API as Spring Boot
+    participant DB as MySQL
+
+    Note over Client,DB: Login
+
+    Client->>API: POST /api/auth/login (username + password)
+    API->>DB: SELECT user WHERE username=?
+    alt User not found or disabled
+        API-->>Client: 400 Bad Request
+    end
+    API->>API: BCrypt.matches(rawPassword, storedHash)
+    alt Password wrong
+        API-->>Client: 400 Invalid credentials
+    end
+    API->>API: JWT.sign(username, role, exp=24h, HMAC-SHA256)
+    API-->>Client: 200 OK — Bearer token
+
+    Note over Client,DB: Authenticated request (e.g. document upload)
+
+    Client->>API: POST /api/documents/upload — Authorization: Bearer token
+    API->>API: JwtAuthenticationFilter — extract + validate token
+    alt Invalid or expired token
+        API-->>Client: 401 Unauthorized
+    end
+    API->>API: Set SecurityContext (username, ROLE_ADMIN)
+    API->>API: hasRole(ADMIN) check
+    alt Insufficient role
+        API-->>Client: 403 Forbidden
+    end
+    API-->>Client: 200 OK
+
+    Note over Client,DB: Public endpoint — no token needed
+
+    Client->>API: POST /api/chat/stream
+    Note over API: /api/chat/** is permitAll() — filter skips auth
+    API-->>Client: SSE stream begins
