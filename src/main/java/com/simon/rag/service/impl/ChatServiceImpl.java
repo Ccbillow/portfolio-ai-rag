@@ -8,12 +8,14 @@ import com.simon.rag.domain.vo.Vos;
 import com.simon.rag.service.ChatService;
 import com.simon.rag.service.impl.QdrantSearchService.SearchHit;
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.model.output.TokenUsage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -142,14 +144,22 @@ public class ChatServiceImpl implements ChatService {
         // 3. Call Claude
         String answer;
         try {
-            answer = chatLanguageModel.generate(
-                    promptBuilder.build(request.getQuestion(), pipeline.context(),
-                            pipeline.questionType(), pipeline.history(), pipeline.focusCompany()));
+            String prompt = promptBuilder.build(request.getQuestion(), pipeline.context(),
+                    pipeline.questionType(), pipeline.history(), pipeline.focusCompany());
+            Response<AiMessage> aiResponse = chatLanguageModel.generate(List.of(UserMessage.from(prompt)));
+            answer = aiResponse.content().text();
+            TokenUsage usage = aiResponse.tokenUsage();
+            if (usage != null) {
+                log.info("TOKEN sync — in={} out={} total={} | q='{}'",
+                        usage.inputTokenCount(), usage.outputTokenCount(), usage.totalTokenCount(),
+                        request.getQuestion().length() > 60
+                                ? request.getQuestion().substring(0, 60) + "..." : request.getQuestion());
+            }
         } catch (Exception e) {
             log.error("Claude generate error", e);
             return Vos.ChatResponse.builder()
                     .answer(isQuotaError(e)
-                            ? "The assistant is a bit overloaded right now — please try again in a moment."
+                            ? "TBot is a bit overloaded right now — please try again in a moment."
                             : "Something went wrong — please try again.")
                     .sources(List.of())
                     .modelUsed(modelName)
@@ -184,7 +194,7 @@ public class ChatServiceImpl implements ChatService {
         emitter.onTimeout(() -> {
             try {
                 emitter.send(SseEmitter.event().name("error")
-                        .data("Response is taking longer than expected. Please try again."));
+                        .data("TBot is taking longer than expected. Please try again."));
                 emitter.complete();
             } catch (Exception ignored) {}
         });
@@ -234,6 +244,12 @@ public class ChatServiceImpl implements ChatService {
 
                         @Override
                         public void onComplete(Response<AiMessage> response) {
+                            TokenUsage usage = response.tokenUsage();
+                            if (usage != null) {
+                                log.info("TOKEN stream — in={} out={} total={} | q='{}'",
+                                        usage.inputTokenCount(), usage.outputTokenCount(), usage.totalTokenCount(),
+                                        question.length() > 60 ? question.substring(0, 60) + "..." : question);
+                            }
                             redisCacheService.appendConversationHistory(
                                     sessionId, question, fullAnswer.toString());
                             try {
@@ -249,7 +265,7 @@ public class ChatServiceImpl implements ChatService {
                             log.error("Claude streaming error", error);
                             try {
                                 String msg = isQuotaError(error)
-                                        ? "My AI assistant is a bit overloaded right now — please try again in a moment."
+                                        ? "TBot is a bit overloaded right now — please try again in a moment."
                                         : "Something went wrong on my end. Please try again.";
                                 emitter.send(SseEmitter.event().name("error").data(msg));
                                 emitter.complete();
