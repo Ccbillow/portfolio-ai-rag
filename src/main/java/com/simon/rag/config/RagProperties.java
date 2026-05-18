@@ -53,7 +53,7 @@ public class RagProperties {
         /** Candidates fetched from Qdrant before reranking */
         private int candidateK = 10;
         /** Final chunks kept after reranking, fed to LLM */
-        private int topN = 3;
+        private int topN = 5;
         private String model = "rerank-v3.5";
         /** Drop reranked chunks below this score; always keeps at least 1 */
         private double minRerankScore = 0.18;
