@@ -4,7 +4,6 @@ import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.vo.Vos;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.util.List;
 
 /**
  * Document service — manages knowledge base ingestion lifecycle.
@@ -22,8 +21,8 @@ public interface DocumentService {
     /** Poll ingestion progress by taskId */
     Vos.IngestTaskResponse getTaskStatus(String taskId);
 
-    /** List all documents (admin view) */
-    List<Vos.DocumentResponse> listAll();
+    /** List documents (admin view), paginated */
+    Vos.PageResponse<Vos.DocumentResponse> listAll(int page, int size);
 
     /** Delete a document and remove its chunks from Qdrant */
     void delete(Long documentId);

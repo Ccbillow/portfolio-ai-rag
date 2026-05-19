@@ -20,7 +20,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -66,11 +66,11 @@ public class IngestionRunner {
         Path filePath = Path.of(ragProperties.getUpload().getDir(), taskId);
 
         try {
-            // 1. Read file from disk
-            byte[] fileBytes = Files.readAllBytes(filePath);
-
-            // 2. Parse to plain text and normalize whitespace
-            String text = normalizeText(tika.parseToString(new ByteArrayInputStream(fileBytes)));
+            // 1 & 2. Stream-parse to plain text — avoids loading the full file into heap
+            String text;
+            try (InputStream fileIn = Files.newInputStream(filePath)) {
+                text = normalizeText(tika.parseToString(fileIn));
+            }
             log.info("Tika parsed {} chars from '{}'", text.length(), fileName);
 
             // 3. Semantic chunking: split on paragraph boundaries, fall back to sentence split for

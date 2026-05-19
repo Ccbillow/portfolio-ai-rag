@@ -14,10 +14,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -132,19 +133,25 @@ public class DocumentServiceImpl implements DocumentService {
     }
 
     @Override
-    public List<Vos.DocumentResponse> listAll() {
-        return documentMapper.selectList(null).stream()
-                .map(doc -> Vos.DocumentResponse.builder()
-                        .id(doc.getId())
-                        .fileName(doc.getFileName())
-                        .fileType(doc.getFileType())
-                        .category(doc.getCategory())
-                        .chunkCount(doc.getChunkCount())
-                        .status(doc.getStatus())
-                        .taskId(doc.getTaskId())
-                        .createdAt(doc.getCreatedAt())
-                        .build())
-                .collect(Collectors.toList());
+    public Vos.PageResponse<Vos.DocumentResponse> listAll(int page, int size) {
+        Page<Document> result = documentMapper.selectPage(new Page<>(page, size), null);
+        return Vos.PageResponse.<Vos.DocumentResponse>builder()
+                .records(result.getRecords().stream()
+                        .map(doc -> Vos.DocumentResponse.builder()
+                                .id(doc.getId())
+                                .fileName(doc.getFileName())
+                                .fileType(doc.getFileType())
+                                .category(doc.getCategory())
+                                .chunkCount(doc.getChunkCount())
+                                .status(doc.getStatus())
+                                .taskId(doc.getTaskId())
+                                .createdAt(doc.getCreatedAt())
+                                .build())
+                        .collect(Collectors.toList()))
+                .total(result.getTotal())
+                .current(result.getCurrent())
+                .size(result.getSize())
+                .build();
     }
 
     @Override

@@ -11,10 +11,9 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-
-import java.util.List;
 
 /**
  * Document management — ROLE_ADMIN only.
@@ -42,14 +41,16 @@ public class DocumentController {
 
         Long uploadedBy = userDetails != null ? userDetails.getUserId() : null;
         log.info("Upload request: file={}, category={}, by={}",
-                file.getOriginalFilename(), request.getCategory(), uploadedBy);
+                StringUtils.cleanPath(String.valueOf(file.getOriginalFilename())), request.getCategory(), uploadedBy);
         return Result.success(documentService.upload(file, request, uploadedBy));
     }
 
-    @Operation(summary = "List all documents")
+    @Operation(summary = "List documents (paginated)")
     @GetMapping
-    public Result<List<Vos.DocumentResponse>> listAll() {
-        return Result.success(documentService.listAll());
+    public Result<Vos.PageResponse<Vos.DocumentResponse>> listAll(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return Result.success(documentService.listAll(page, size));
     }
 
     @Operation(summary = "Poll async ingestion task progress")

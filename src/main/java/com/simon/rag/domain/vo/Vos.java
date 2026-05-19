@@ -77,4 +77,15 @@ public final class Vos {
         private Integer version;
         private LocalDateTime updatedAt;
     }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PageResponse<T> {
+        private List<T> records;
+        private long total;
+        private long current;
+        private long size;
+    }
 }
