@@ -62,7 +62,7 @@ Portfolio AI RAG is a production-deployed interview assistant that answers quest
 | AI integration | LangChain4j | Lightweight vs. LangChain Python; native Java types |
 | Vector store | Qdrant | Named multi-vector support (dense+sparse in one point); fast ANN; simple REST API |
 | Embedding | OpenAI text-embedding-3-small | Best cost/quality ratio; 1536-dim, strong semantic coverage |
-| Sparse vectorizer | Custom BM25 (SparseVectorizer.java) | No external dependency; tunable stop words for resume domain |
+| Sparse vectorizer | Custom BM25-IDF (SparseVectorizer.java) | Corpus IDF persisted to disk; no external dependency; tunable stop words |
 | Reranker | Cohere rerank-v3.5 | Cross-encoder quality; faster than running a local model |
 | LLM | Claude Haiku | Low latency; cost-effective for short factual answers; good instruction following |
 | Document parsing | Apache Tika | Handles PDF/DOCX/TXT uniformly; no format-specific logic |
@@ -76,20 +76,33 @@ Portfolio AI RAG is a production-deployed interview assistant that answers quest
 ## Data Flow Summary
 
 **Ingestion (admin only):**
-```
-Upload → Disk save → MySQL (PENDING) → Async: Tika parse
-  → Character split (1000/150) → OpenAI embed (dense)
-  → BM25 vectorize (sparse) → Qdrant upsert (both vectors)
-  → MySQL (COMPLETED, chunk_count)
-```
+
+> Upload  
+→ Disk save   
+→ MySQL (PENDING)  
+→ \[Async\] Tika parse  
+→ Semantic split (paragraph/sentence-aware, 1000/150)  
+→ RAPTOR: Claude summary chunk (prepended)  
+→ Contextual Retrieval: Claude context prefix per chunk (parallel, Semaphore 3)  
+→ OpenAI embed (dense) + BM25-IDF vectorize (sparse)  
+→ Company tagging   
+→ Qdrant upsert  
+→ IDF corpus update (idf\_corpus.json)  
+→ MySQL (COMPLETED, chunk\_count)
 
 **Chat (public):**
-```
-Question → Rule-based classifier → Company focus extraction
-  → Query rewrite (pronoun resolution) → Hybrid search (RRF)
-  → Cohere rerank → Company scope filter → Prompt assembly
-  → Claude Haiku (SSE streaming) → Session history (Redis)
-```
+
+> Question   
+→ Rule-based classifier  
+→ Company focus extraction  
+→ Query rewrite (pronoun resolution)  
+→ Hybrid search: dense + BM25-IDF   
+→ Qdrant RRF fusion  
+→ Cohere rerank   
+→ Company scope filter  
+→ Prompt assembly   
+→ Claude Haiku (SSE streaming)  
+→ Session history (Redis)
 
 ## Database Schema (MySQL)
 
@@ -106,6 +119,7 @@ Each point contains:
 - `vectors.sparse` — BM25 sparse vector (indices + values)
 - `payload.text_segment` — raw chunk text
 - `payload.docId`, `fileName`, `category`, `chunkIndex`, `chunkTotal`
+- `payload.chunkType` — `"document_summary"` for RAPTOR summary chunks; absent for regular chunks
 - `payload.companies` — list of company labels for company-scoped filtering
 
 ## Security

@@ -3,6 +3,7 @@ sequenceDiagram
     participant API as Spring Boot
     participant MySQL
     participant Redis
+    participant Claude as Claude Haiku
     participant OpenAI
     participant Qdrant
 
@@ -21,19 +22,27 @@ sequenceDiagram
     Note over API: Background thread — rag-async-*
 
     API->>API: Tika parse to plain text
-    API->>API: Split into chunks (1000 chars / 150 overlap)
-    API->>API: Tag each chunk with company labels
+    API->>API: Semantic split — paragraph boundaries → sentence fallback (1000/150)
+    API->>API: Attach metadata per chunk (docId, fileName, category, chunkIndex)
 
-    API->>OpenAI: Embed all chunks in batches of 100
+    API->>Claude: RAPTOR — generate document summary (1 call)
+    Claude-->>API: 4-6 sentence summary chunk (prepended, chunkType=document_summary)
+
+    API->>Claude: Contextual Retrieval — context prefix per chunk (parallel, Semaphore 3)
+    Claude-->>API: 1-2 sentence prefix prepended to each chunk's embedding text
+
+    API->>OpenAI: Embed all chunks in batches of 100 (enriched text)
     OpenAI-->>API: float[1536] dense vectors
 
-    API->>API: BM25 vectorize each chunk (in-process)
+    API->>API: BM25-IDF vectorize each chunk (in-process)
+    API->>API: Tag each chunk with company labels
 
     API->>Qdrant: Upsert points — dense + sparse vectors + payload
     Qdrant-->>API: OK
 
     API->>MySQL: UPDATE status=COMPLETED, chunk_count=N
     API->>Redis: SET ingest task = COMPLETED
+    API->>API: Update IDF corpus (idf_corpus.json)
     API->>API: Delete temp file from disk
 
     alt Any step fails

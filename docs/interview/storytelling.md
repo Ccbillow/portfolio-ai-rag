@@ -91,7 +91,24 @@ Hybrid search with RRF fusion covers both. The Qdrant Query API handles the fusi
 
 ---
 
-## 7. How would you scale this if you had 1000 users?
+## 7. What retrieval improvements did you make after the initial build?
+
+Three problems I found through testing:
+
+**1. BM25 without IDF(Inverted Document Frequency).** My sparse vectorizer was using TF only — "SofaBoot" and "project" scored equally when they appeared with similar frequency. Added corpus IDF (`log(1 + (N+1)/(df+1))`), persisted to disk and updated on each ingestion. Now rare technical terms dominate BM25 scores as intended.
+
+**2. Mid-sentence chunk cuts.** Fixed-character splitting would break a sentence in half. Switched to a paragraph-aware splitter: split on `\n\n` first, fall back to sentence boundaries for oversized paragraphs. Resume docs are naturally paragraph-structured, so this matched the document structure instead of fighting it.
+
+**3. Broad questions missed context.** "Tell me about your overall Alipay experience" needed to piece together 5-6 chunks, which was unreliable. Added two mechanisms:
+
+- **Contextual Retrieval**: at index time, Claude generates a 1-2 sentence context prefix per chunk (company, project, time period) and prepends it to the embedding text. Dense vectors carry more context.
+- **RAPTOR summary**: one Claude-generated 4-6 sentence document summary per file, stored as a regular Qdrant chunk. Broad questions hit this chunk directly.
+
+Both are one-time costs at ingest, not per-query. The contextual prefix generation is parallelized with `CompletableFuture` + `Semaphore(3)` so ingestion doesn't become a bottleneck.
+
+---
+
+## 8. How would you scale this if you had 1000 users?
 
 **Current bottlenecks at scale:**
 

@@ -27,8 +27,8 @@ Browser ──HTTPS──► Nginx ──► Spring Boot API
 Question → Classifier (rule-based, 0 LLM cost)
   → Company focus extraction
   → Query rewrite (pronoun resolution from history)
-  → Hybrid search: dense + BM25 sparse → Qdrant RRF fusion
-  → Cohere cross-encoder rerank (10 candidates → 3)
+  → Hybrid search: dense + BM25-IDF sparse → Qdrant RRF fusion
+  → Cohere cross-encoder rerank (10 candidates → 5)
   → Company scope filter
   → Prompt assembly → Claude Haiku (SSE streaming)
 ```
@@ -36,17 +36,28 @@ Question → Classifier (rule-based, 0 LLM cost)
 **Ingestion pipeline:**
 
 ```
-Upload → Tika parse → Character split (1000/150)
-  → OpenAI embed (dense) + BM25 vectorize (sparse)
-  → Company tagging → Qdrant upsert
+Upload → Tika parse 
+	→ Semantic split (paragraph/sentence-aware, 1000/150)
+  	→ RAPTOR: Claude document summary chunk
+  	→ Contextual Retrieval: Claude context prefix per chunk (parallel, Semaphore 3)
+  	→ OpenAI embed (dense) + BM25-IDF vectorize (sparse)
+  	→ Company tagging 
+  	→ Qdrant upsert 
+  	→ IDF corpus update
 ```
 
 ---
 
 ## Key Design Decisions
 
-**Hybrid search (dense + BM25)** — [details](docs/design/retrieval-strategy.md)
-Pure dense search misses exact technical terms ("SofaBoot", "MAT heap dump"). BM25 sparse vectors stored in the same Qdrant point give exact-match recall without a separate Elasticsearch cluster. Qdrant fuses both via RRF in-database.
+**Hybrid search (dense + BM25-IDF)** — [details](docs/design/retrieval-strategy.md)
+Pure dense search misses exact technical terms ("SofaBoot", "MAT heap dump"). BM25 sparse vectors stored in the same Qdrant point give exact-match recall without Elasticsearch. IDF weights are computed across the corpus and persisted to `idf_corpus.json`, so rare technical terms score higher than common ones. Qdrant fuses both via RRF in-database.
+
+**Contextual Retrieval** — [details](docs/design/ingestion-pipeline.md)
+At index time, Claude generates a 1-2 sentence context description per chunk (company, project, time period) and prepends it to the embedding text. Dense vectors carry richer context; raw text is stored separately for display. Parallel generation with `Semaphore(3)` keeps ingestion time manageable.
+
+**RAPTOR document summary** — [details](docs/design/ingestion-pipeline.md)
+One Claude-generated summary chunk per document is prepended to the Qdrant collection at ingest time. Broad questions ("tell me about your Alipay experience") hit this summary chunk instead of needing to assemble context from many smaller chunks.
 
 **Cohere reranking** — [details](docs/design/retrieval-strategy.md)
 Retrieves 10 candidate chunks from Qdrant, reranks via cross-encoder (query+document scored jointly), keeps top 5. Cuts prompt noise vs. passing all candidates to the LLM, with better precision than cosine-score ordering.
@@ -73,7 +84,7 @@ Hard refusal rule in the prompt: if evidence is absent from the retrieved contex
 | AI integration | LangChain4j |
 | Vector store | Qdrant (named dense + sparse vectors) |
 | Embedding | OpenAI text-embedding-3-small (1536d) |
-| Sparse vectorizer | Custom BM25 (in-process, no Elasticsearch) |
+| Sparse vectorizer | Custom BM25-IDF (in-process, corpus stats persisted to disk) |
 | Reranker | Cohere rerank-v3.5 |
 | LLM | Claude Haiku (Anthropic) |
 | Document parsing | Apache Tika |
@@ -179,7 +190,7 @@ Nginx handles SSL termination and proxies to the Spring Boot container on port 8
 | Doc | What it covers |
 |-----|---------------|
 | [architecture.md](docs/design/architecture.md) | Component diagram, data flow, DB schema |
-| [ingestion-pipeline.md](docs/design/ingestion-pipeline.md) | Full ingestion sequence with config |
+| [ingestion-pipeline.md](docs/design/ingestion-pipeline.md) | Full ingestion sequence: semantic chunking, Contextual Retrieval, RAPTOR |
 | [retrieval-strategy.md](docs/design/retrieval-strategy.md) | Hybrid search, reranking, company filtering |
 | [company-isolation.md](docs/design/company-isolation.md) | Company tagging, focus extraction, allowlist filter, parent-child config |
 | [prompt-design.md](docs/design/prompt-design.md) | Prompt structure, type hints, evolution from monolithic to DB-managed |
@@ -191,7 +202,7 @@ Nginx handles SSL termination and proxies to the Spring Boot container on port 8
 |-----|---------------|
 | [debugging-cases.md](docs/engineering/debugging-cases.md) | Real bugs: symptom → root cause → fix |
 | [performance-notes.md](docs/engineering/performance-notes.md) | Latency, token cost, retrieval quality |
-| [dev-plan.md](docs/engineering/dev-plan.md) | Development phases 1–9 (completed) and 10–14 (planned) |
+| [dev-plan.md](docs/engineering/dev-plan.md) | Development phases 1–10 (completed) and 11–13 (planned) |
 
 **Interview**
 

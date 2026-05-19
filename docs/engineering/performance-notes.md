@@ -20,15 +20,19 @@
 
 ## Ingestion Performance
 
-| Step | Estimate |
-|------|---------|
-| Tika parse (DOCX ~50KB) | < 1s |
-| Character split (1000/150) | < 10ms |
-| OpenAI embedding (batch=100, ~20 chunks) | 500ms–1s |
-| Qdrant upsert (20 points) | 50–100ms |
-| **Total per file** | **~2–3s** |
+| Step | Estimate | Notes |
+|------|---------|-------|
+| Tika parse (DOCX ~50KB) | < 1s | |
+| Semantic split (1000/150) | < 10ms | Replaced character splitter |
+| RAPTOR summary (1 Claude call) | 2–5s | One-time per document |
+| Contextual Retrieval (parallel, Semaphore 3) | 5–15s | ~20 chunks × ~0.5s each ÷ 3 concurrency |
+| OpenAI embedding (batch=100, ~20 chunks) | 500ms–1s | |
+| BM25-IDF vectorize + IDF persist | < 50ms | In-process, JSON write |
+| Qdrant upsert (20 points) | 50–100ms | |
+| **Total per file (CR + RAPTOR enabled)** | **~10–25s** | |
+| **Total per file (CR + RAPTOR disabled)** | **~2–3s** | Same as before |
 
-Dense embedding dominates ingestion time. Batch size of 100 keeps API calls to 1 per file in most cases.
+Contextual Retrieval and RAPTOR add significant ingestion time, but this is a one-time cost per document upload. Query latency is unaffected.
 
 ---
 

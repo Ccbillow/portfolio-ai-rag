@@ -32,7 +32,9 @@ The admin API (`PUT /api/admin/prompt-templates/{id}`) updates any template live
 
 ## Current Template Structure (May 2026)
 
-**system_prompt** covers: persona, scope rule, style, compression rules, output constraints, grounding, role accuracy, company scope, fallback behavior. Full content in `prompt_template` table (id=1, v3).
+### Query-time prompts (called per chat request)
+
+**system_prompt** covers: persona, scope rule, style, compression rules, output constraints, grounding, role accuracy, company scope, fallback behavior.
 
 **Type hints** (injected as `{{typeHint}}`):
 
@@ -43,6 +45,14 @@ The admin API (`PUT /api/admin/prompt-templates/{id}`) updates any template live
 | BEHAVIORAL | Exactly 3 sentences (Challenge / Action / Result); blank line between each; HARD STOP after sentence 3 | v5 |
 | STRATEGIC | 2 sentences; diplomatic | v1 |
 | DEFAULT | Max 3 sentences | v1 |
+
+### Ingestion-time prompts (called during document upload, not per query)
+
+**contextual_retrieval_prefix** — called once per chunk during ingestion. Generates a 1-2 sentence context description prepended to the embedding text. Placeholders: `{{docText}}`, `{{chunkText}}`.
+
+**raptor_document_summary** — called once per document during ingestion. Generates a 4-6 sentence document-level summary stored as a standalone Qdrant chunk. Placeholders: `{{fileName}}`, `{{category}}`, `{{docText}}`.
+
+Both are stored in `prompt_template` and hot-reloadable. Changes take effect on the next document ingest.
 
 ---
 

@@ -94,17 +94,22 @@ The company filter uses Qdrant's `should` condition:
 
 Empty-company chunks (shared background info) are always included.
 
-## BM25 Sparse Vectorizer
+## BM25-IDF Sparse Vectorizer
 
-Custom implementation (no IDF — single-document scoring):
+Custom implementation with corpus IDF:
+- Formula: `score(t,d) = IDF(t) × (k1+1)·TF / (k1·(1-b+b·|d|/avgLen) + TF)`
+- IDF: `log(1 + (N+1)/(df(t)+1))` where N = total chunks indexed, df = chunks containing term
 - Vocab size: 65,536 (hash(term) & MAX_VALUE % 65536)
-- k1=1.2, b=0.75
-- avgLen = chunkSize / 5 (≈200 tokens for 1000-char chunks)
+- k1=1.2, b=0.75, avgLen = chunkSize / 5 (≈200 tokens for 1000-char chunks)
 - Stop words: 50+ common English words filtered
 - CJK: each character is a token; Latin: split on non-alphanumeric
+- Corpus stats persisted to `{uploadDir}/idf_corpus.json`, updated after each ingestion
+- Falls back to IDF=1 (TF-only) when no corpus data is available
 
-Why custom instead of BM25s/Elasticsearch:
-- No external Elasticsearch dependency
+Why IDF matters for resume retrieval: without IDF, "project" and "SofaBoot" score equally when they appear with similar TF. With IDF, rare technical terms (SofaBoot, MAT, SPEL) dominate BM25 scores as intended.
+
+Why custom instead of Elasticsearch:
+- No external dependency
 - Tunable stop words for the resume domain
 - Integrates directly with Qdrant sparse vector format
 
