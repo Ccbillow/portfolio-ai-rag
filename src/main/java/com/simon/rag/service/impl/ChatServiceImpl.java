@@ -115,7 +115,8 @@ public class ChatServiceImpl implements ChatService {
 
         // 1. Cache check — disabled until production (rag.cache.enabled: false)
         String cacheKey = CacheConstant.CHAT_CACHE_PREFIX
-                + DigestUtils.md5DigestAsHex(request.getQuestion().getBytes(StandardCharsets.UTF_8));
+                + DigestUtils.md5DigestAsHex(
+                    (request.getSessionId() + ":" + request.getQuestion()).getBytes(StandardCharsets.UTF_8));
         if (ragProperties.getCache().isEnabled()) {
             Vos.ChatResponse cached = redisCacheService.getChatCache(cacheKey, start);
             if (cached != null) return cached;

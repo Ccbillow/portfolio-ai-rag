@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import static com.simon.rag.comm.enums.IngestionStatus.*;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -152,5 +154,56 @@ public class DocumentServiceImpl implements DocumentService {
         qdrantSearchService.deleteByDocId(String.valueOf(documentId));
         documentMapper.deleteById(documentId);
         log.info("Document {} deleted from Qdrant and MySQL", documentId);
+    }
+
+    @Override
+    public Vos.DocumentResponse retryIngestion(Long documentId) {
+        Document doc = documentMapper.selectById(documentId);
+        if (doc == null) {
+            throw new RuntimeException("Document not found: " + documentId);
+        }
+
+        if (COMPLETED.name().equals(doc.getStatus())) {
+            return Vos.DocumentResponse.builder()
+                    .id(doc.getId()).fileName(doc.getFileName())
+                    .status(doc.getStatus()).taskId(doc.getTaskId())
+                    .message("Ingestion already completed — no retry needed.")
+                    .build();
+        }
+
+        if (FAILED.name().equals(doc.getStatus())) {
+            return Vos.DocumentResponse.builder()
+                    .id(doc.getId()).fileName(doc.getFileName())
+                    .status(doc.getStatus()).taskId(doc.getTaskId())
+                    .message("Status is FAILED — please re-upload the file.")
+                    .build();
+        }
+
+        // PENDING or PROCESSING: check if temp file is still on disk
+        Path filePath = Path.of(ragProperties.getUpload().getDir(), doc.getTaskId());
+        if (!Files.exists(filePath)) {
+            // Temp file is gone — reset to FAILED so the same filename can be re-uploaded
+            documentMapper.updateIngestionResult(documentId, FAILED.name(), 0,
+                    "Reset by retry: temp file missing, please re-upload the file.");
+            redisCacheService.setIngestionStatus(doc.getTaskId(), FAILED.name(), 24);
+            log.warn("Retry reset docId={} to FAILED (temp file missing)", documentId);
+            return Vos.DocumentResponse.builder()
+                    .id(doc.getId()).fileName(doc.getFileName())
+                    .status(FAILED.name()).taskId(doc.getTaskId())
+                    .message("Temp file no longer on disk. Status reset to FAILED — please re-upload the file.")
+                    .build();
+        }
+
+        // File on disk — re-trigger async ingestion
+        redisCacheService.setIngestionStatus(doc.getTaskId(), PENDING.name(), 24);
+        ingestionRunner.ingest(doc.getId(), doc.getTaskId(), doc.getFileName(), doc.getCategory());
+        log.info("Retry triggered for docId={}, taskId={}", documentId, doc.getTaskId());
+
+        return Vos.DocumentResponse.builder()
+                .id(doc.getId()).fileName(doc.getFileName())
+                .category(doc.getCategory()).status(PENDING.name())
+                .taskId(doc.getTaskId())
+                .message("Ingestion retry triggered.")
+                .build();
     }
 }

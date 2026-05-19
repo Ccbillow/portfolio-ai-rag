@@ -15,6 +15,8 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tika.Tika;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -28,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 
 /**
@@ -52,7 +55,12 @@ public class IngestionRunner {
 
     private final Tika tika = new Tika();
 
-    @Async
+    // Field-injected with qualifier; non-final to avoid Lombok constructor conflict with @Qualifier
+    @Autowired
+    @Qualifier("uploadExecutor")
+    private Executor uploadExecutor;
+
+    @Async("taskExecutor")
     public void ingest(Long docId, String taskId, String fileName, String category) {
         redisCacheService.setIngestionStatus(taskId, IngestionStatus.PROCESSING.name());
         Path filePath = Path.of(ragProperties.getUpload().getDir(), taskId);
@@ -133,7 +141,7 @@ public class IngestionRunner {
                             } finally {
                                 semaphore.release();
                             }
-                        }))
+                        }, uploadExecutor))
                         .toList();
                 futures.forEach(f -> embeddingTexts.add(f.join()));
                 log.info("Contextual Retrieval: done in {}ms", System.currentTimeMillis() - crStart);
@@ -207,7 +215,7 @@ public class IngestionRunner {
             log.error("Ingestion failed for docId={}", docId, e);
             redisCacheService.setIngestionStatus(taskId, IngestionStatus.FAILED.name());
             documentMapper.updateIngestionResult(
-                    docId, IngestionStatus.FAILED.name(), 0, e.getMessage());
+                    docId, IngestionStatus.FAILED.name(), 0, sanitizeErrorMessage(e));
         } finally {
             try { Files.deleteIfExists(filePath); }
             catch (Exception ex) { log.warn("Failed to delete temp file {}: {}", filePath, ex.getMessage()); }
@@ -323,5 +331,13 @@ public class IngestionRunner {
                 .replace("\r\n", "\n")
                 .replaceAll("(?<!\n)\n(?!\n)", " ")
                 .replaceAll("\n{3,}", "\n\n");
+    }
+
+    /** Truncates and strips control chars from exception messages before storing in DB. */
+    private String sanitizeErrorMessage(Exception e) {
+        String msg = e.getMessage();
+        if (msg == null) return "Unknown error";
+        String cleaned = msg.replaceAll("[\\p{Cntrl}&&[^\t\n]]", " ");
+        return cleaned.length() > 500 ? cleaned.substring(0, 500) : cleaned;
     }
 }

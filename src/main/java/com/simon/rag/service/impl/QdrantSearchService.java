@@ -40,6 +40,11 @@ public class QdrantSearchService {
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(body)
                 .retrieve()
+                .onStatus(status -> status.is4xxClientError() || status.is5xxServerError(),
+                        resp -> resp.bodyToMono(String.class).map(errBody -> {
+                            log.error("Qdrant upsertPoints error {}: {}", resp.statusCode(), errBody);
+                            return new RuntimeException("Qdrant upsert failed [" + resp.statusCode() + "]");
+                        }))
                 .toBodilessEntity()
                 .block();
         log.info("Upserted {} points to Qdrant", points.size());
@@ -185,6 +190,11 @@ public class QdrantSearchService {
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(body)
                 .retrieve()
+                .onStatus(status -> status.is4xxClientError() || status.is5xxServerError(),
+                        resp -> resp.bodyToMono(String.class).map(errBody -> {
+                            log.error("Qdrant deleteByDocId error {}: {}", resp.statusCode(), errBody);
+                            return new RuntimeException("Qdrant delete failed [" + resp.statusCode() + "]");
+                        }))
                 .toBodilessEntity()
                 .block();
         log.info("Qdrant: deleted all chunks for docId={}", docId);

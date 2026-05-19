@@ -27,4 +27,11 @@ public interface DocumentService {
 
     /** Delete a document and remove its chunks from Qdrant */
     void delete(Long documentId);
+
+    /**
+     * Retry a stuck PENDING/PROCESSING ingestion.
+     * If the temp file is still on disk, re-triggers ingestion.
+     * If the file is gone, resets status to FAILED so the file can be re-uploaded.
+     */
+    Vos.DocumentResponse retryIngestion(Long documentId);
 }

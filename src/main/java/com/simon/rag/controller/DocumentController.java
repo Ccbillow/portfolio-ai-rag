@@ -64,4 +64,10 @@ public class DocumentController {
         documentService.delete(id);
         return Result.success();
     }
+
+    @Operation(summary = "Retry a stuck PENDING/PROCESSING ingestion. Re-triggers if temp file exists; resets to FAILED otherwise so the file can be re-uploaded.")
+    @PostMapping("/{id}/retry")
+    public Result<Vos.DocumentResponse> retry(@PathVariable Long id) {
+        return Result.success(documentService.retryIngestion(id));
+    }
 }
