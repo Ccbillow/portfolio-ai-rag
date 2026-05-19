@@ -77,7 +77,7 @@
 
 ---
 
-## 🔜 Phase 10 — Retrieval Optimization
+## ✅ Phase 10 — Retrieval Optimization
 
 - Contextual Retrieval: prepend a context description to each chunk at index time (e.g. "this chunk is from OCBC project, API gateway redesign"); requires full re-ingest; one-time Claude cost ~$0.01
 

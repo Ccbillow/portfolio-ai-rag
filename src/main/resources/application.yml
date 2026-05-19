@@ -73,6 +73,9 @@ rag:
     enabled: false   # enable in production after Phase 5 search quality is finalized
   hybrid-search:
     enabled: true
+  contextual-retrieval:
+    enabled: true
+    max-doc-chars: 12000
   multi-query:
     enabled: false
   rate-limit:

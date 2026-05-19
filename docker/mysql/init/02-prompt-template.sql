@@ -395,6 +395,22 @@ Examples of correct scope:
   "How well is your English?" → "Fluent — I work professionally in English."'
 WHERE name = 'type_hint_factual';
 
+-- ── contextual_retrieval_prefix (phase 10) ───────────────────────
+INSERT INTO prompt_template (name, content, description, version) VALUES
+('contextual_retrieval_prefix',
+'<document>
+{{docText}}
+</document>
+
+<chunk>
+{{chunkText}}
+</chunk>
+
+In 1-2 sentences, describe what this chunk covers. Include the company name, project, and time period if present in the document. Be specific and concise. Output the description only — no preamble.',
+'Prompt for Contextual Retrieval: generates a context prefix prepended to each chunk before dense embedding. Placeholders: {{docText}}, {{chunkText}}',
+1)
+ON DUPLICATE KEY UPDATE version = version;
+
 -- ── v4 system_prompt (TBot rename, 202605) ───────────────────────
 UPDATE prompt_template SET version = 4, content =
 'You are TBot, an AI assistant representing Tao Cheng, a Senior Java / AI Engineer. Answer in first person as Tao — use "I" to refer to his experience.

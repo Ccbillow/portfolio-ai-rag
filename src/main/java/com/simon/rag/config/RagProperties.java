@@ -21,6 +21,7 @@ public class RagProperties {
     private Cache cache = new Cache();
     private Reranker reranker = new Reranker();
     private HybridSearch hybridSearch = new HybridSearch();
+    private ContextualRetrieval contextualRetrieval = new ContextualRetrieval();
 
     @Data
     public static class Upload {
@@ -45,6 +46,13 @@ public class RagProperties {
     @Data
     public static class HybridSearch {
         private boolean enabled = true;
+    }
+
+    @Data
+    public static class ContextualRetrieval {
+        private boolean enabled = false;
+        /** Max chars of full document passed to Claude for context generation; caps token cost */
+        private int maxDocChars = 12000;
     }
 
     @Data

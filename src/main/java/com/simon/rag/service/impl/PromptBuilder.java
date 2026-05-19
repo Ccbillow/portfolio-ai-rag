@@ -1,5 +1,6 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.comm.enums.PromptKey;
 import com.simon.rag.comm.enums.QuestionType;
 import com.simon.rag.config.RagProperties;
 import lombok.RequiredArgsConstructor;
@@ -28,12 +29,12 @@ public class PromptBuilder {
     }
 
     public String build(String question, String context, QuestionType type, String history, String focusCompany) {
-        String typeHintKey = switch (type) {
-            case FACTUAL    -> "type_hint_factual";
-            case TECHNICAL  -> "type_hint_technical";
-            case STRATEGIC  -> "type_hint_strategic";
-            case BEHAVIORAL -> "type_hint_behavioral";
-            default         -> "type_hint_default";
+        PromptKey typeHintKey = switch (type) {
+            case FACTUAL    -> PromptKey.TYPE_HINT_FACTUAL;
+            case TECHNICAL  -> PromptKey.TYPE_HINT_TECHNICAL;
+            case STRATEGIC  -> PromptKey.TYPE_HINT_STRATEGIC;
+            case BEHAVIORAL -> PromptKey.TYPE_HINT_BEHAVIORAL;
+            default         -> PromptKey.TYPE_HINT_DEFAULT;
         };
         String typeHint = promptTemplateService.get(typeHintKey);
 
@@ -46,7 +47,7 @@ public class PromptBuilder {
         String historySection = (history == null || history.isBlank()) ? "" :
                 "\nRecent conversation (use for context only — do not repeat these answers):\n" + history + "\n";
 
-        return promptTemplateService.get("system_prompt")
+        return promptTemplateService.get(PromptKey.SYSTEM_PROMPT)
                 .replace("{{typeHint}}", typeHint)
                 .replace("{{companyContextHint}}", companyContextHint)
                 .replace("{{historySection}}", historySection)

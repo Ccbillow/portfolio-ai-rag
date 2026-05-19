@@ -1,13 +1,16 @@
 package com.simon.rag.service.impl;
 
 import com.simon.rag.comm.enums.IngestionStatus;
+import com.simon.rag.comm.enums.PromptKey;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
 import com.simon.rag.service.impl.SparseVectorizer.SparseVector;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.document.splitter.DocumentByCharacterSplitter;
 import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -37,11 +40,13 @@ import java.util.UUID;
 public class IngestionRunner {
 
     private final EmbeddingModel embeddingModel;
+    private final ChatLanguageModel chatLanguageModel;
     private final QdrantSearchService qdrantSearchService;
     private final SparseVectorizer sparseVectorizer;
     private final DocumentMapper documentMapper;
     private final RedisCacheService redisCacheService;
     private final RagProperties ragProperties;
+    private final PromptTemplateService promptTemplateService;
 
     private final Tika tika = new Tika();
     private DocumentByCharacterSplitter splitter;
@@ -83,18 +88,38 @@ public class IngestionRunner {
                 segments.add(TextSegment.from(rawSegments.get(i).text(), meta));
             }
 
-            // 5. Compute dense embeddings (OpenAI) — batch to stay within per-request limits
+            // 5. Contextual Retrieval: prepend a Claude-generated context description to each chunk
+            //    before embedding. Dense vector uses enriched text; BM25 + stored payload use original.
+            List<String> embeddingTexts = new ArrayList<>(segments.size());
+            RagProperties.ContextualRetrieval crCfg = ragProperties.getContextualRetrieval();
+            if (crCfg.isEnabled()) {
+                String docContext = text.length() > crCfg.getMaxDocChars()
+                        ? text.substring(0, crCfg.getMaxDocChars()) : text;
+                log.info("Contextual Retrieval: generating context prefixes for {} chunks", segments.size());
+                long crStart = System.currentTimeMillis();
+                for (TextSegment seg : segments) {
+                    String prefix = generateContextPrefix(docContext, seg.text());
+                    embeddingTexts.add(prefix.isBlank() ? seg.text() : prefix + "\n\n" + seg.text());
+                }
+                log.info("Contextual Retrieval: done in {}ms", System.currentTimeMillis() - crStart);
+            } else {
+                segments.forEach(seg -> embeddingTexts.add(seg.text()));
+            }
+
+            // 6. Compute dense embeddings (OpenAI) — batch to stay within per-request limits
             List<Embedding> embeddings = new ArrayList<>();
             int batchSize = 100;
-            for (int start = 0; start < segments.size(); start += batchSize) {
-                List<TextSegment> batch = segments.subList(start, Math.min(start + batchSize, segments.size()));
+            for (int start = 0; start < embeddingTexts.size(); start += batchSize) {
+                List<TextSegment> batch = embeddingTexts
+                        .subList(start, Math.min(start + batchSize, embeddingTexts.size()))
+                        .stream().map(TextSegment::from).toList();
                 embeddings.addAll(embeddingModel.embedAll(batch).content());
             }
 
             // Filename-level companies — non-empty means the whole file is scoped to those companies.
             List<String> fileCompanies = extractCompaniesFromText(fileName);
 
-            // 6. Build Qdrant points with dense + sparse vectors
+            // 7. Build Qdrant points with dense + sparse vectors
             List<QdrantSearchService.PointData> points = new ArrayList<>();
             for (int i = 0; i < segments.size(); i++) {
                 TextSegment seg = segments.get(i);
@@ -131,10 +156,10 @@ public class IngestionRunner {
                         UUID.randomUUID().toString(), vectors, payload));
             }
 
-            // 7. Upsert to Qdrant
+            // 8. Upsert to Qdrant
             qdrantSearchService.upsertPoints(points);
 
-            // 8. Mark done
+            // 9. Mark done
             redisCacheService.setIngestionStatus(taskId, IngestionStatus.COMPLETED.name());
             documentMapper.updateIngestionResult(
                     docId, IngestionStatus.COMPLETED.name(), segments.size(), null);
@@ -157,6 +182,25 @@ public class IngestionRunner {
         return ragProperties.getCompanies().stream()
                 .filter(c -> lower.contains(c.toLowerCase()))
                 .toList();
+    }
+
+    /**
+     * Calls Claude to generate a 1–2 sentence context description for a chunk.
+     * The description is prepended to the chunk text before dense embedding so the
+     * vector carries company/project/time context that raw chunks often lack.
+     * Falls back to empty string on any error so ingestion continues uninterrupted.
+     */
+    private String generateContextPrefix(String fullDocText, String chunkText) {
+        String prompt = promptTemplateService.get(PromptKey.CONTEXTUAL_RETRIEVAL_PREFIX)
+                .replace("{{docText}}", fullDocText)
+                .replace("{{chunkText}}", chunkText);
+        try {
+            return chatLanguageModel.generate(List.of(UserMessage.from(prompt)))
+                    .content().text().strip();
+        } catch (Exception e) {
+            log.warn("Context prefix generation failed, using raw chunk: {}", e.getMessage());
+            return "";
+        }
     }
 
     /**

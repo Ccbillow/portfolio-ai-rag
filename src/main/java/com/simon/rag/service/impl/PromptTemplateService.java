@@ -1,5 +1,6 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.comm.enums.PromptKey;
 import com.simon.rag.comm.exception.BusinessException;
 import com.simon.rag.dao.PromptTemplateMapper;
 import com.simon.rag.domain.entity.PromptTemplate;
@@ -30,6 +31,10 @@ public class PromptTemplateService {
         templates.forEach(t -> fresh.put(t.getName(), t.getContent()));
         cache = fresh;
         log.info("Loaded {} prompt templates from DB: {}", templates.size(), fresh.keySet());
+    }
+
+    public String get(PromptKey key) {
+        return get(key.key);
     }
 
     public String get(String name) {
