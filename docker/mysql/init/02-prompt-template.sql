@@ -407,7 +407,29 @@ INSERT INTO prompt_template (name, content, description, version) VALUES
 </chunk>
 
 In 1-2 sentences, describe what this chunk covers. Include the company name, project, and time period if present in the document. Be specific and concise. Output the description only — no preamble.',
-'Prompt for Contextual Retrieval: generates a context prefix prepended to each chunk before dense embedding. Placeholders: {{docText}}, {{chunkText}}',
+'Contextual Retrieval: context prefix prepended to each chunk before dense embedding. Placeholders: {{docText}}, {{chunkText}}',
+1)
+ON DUPLICATE KEY UPDATE version = version;
+
+-- ── raptor_document_summary (phase 10) ───────────────────────────
+INSERT INTO prompt_template (name, content, description, version) VALUES
+('raptor_document_summary',
+'You are summarizing a professional resume document for an AI interview assistant.
+
+Document: {{fileName}} (Category: {{category}})
+
+<document>
+{{docText}}
+</document>
+
+Write a 4–6 sentence summary capturing:
+- Company/project name and approximate time period
+- The candidate''s role and core responsibilities
+- Key technical achievements, systems built, or problems solved
+- Main technologies or methodologies used
+
+Output only the summary paragraph. No preamble or headers.',
+'RAPTOR: document-level summary chunk prepended to Qdrant collection at ingest time. Placeholders: {{fileName}}, {{category}}, {{docText}}',
 1)
 ON DUPLICATE KEY UPDATE version = version;
 

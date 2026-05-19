@@ -76,6 +76,10 @@ rag:
   contextual-retrieval:
     enabled: true
     max-doc-chars: 12000
+    concurrency: 3
+  raptor:
+    enabled: true
+    max-doc-chars: 12000
   multi-query:
     enabled: false
   rate-limit:

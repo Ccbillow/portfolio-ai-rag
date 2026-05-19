@@ -77,17 +77,26 @@
 
 ---
 
-## ✅ Phase 10 — Retrieval Optimization
+## ✅ Phase 10 — Ingestion & Retrieval Optimization
 
-- Contextual Retrieval: prepend a context description to each chunk at index time (e.g. "this chunk is from OCBC project, API gateway redesign"); requires full re-ingest; one-time Claude cost ~$0.01
+Ingestion
+
+- Contextual Retrieval: Claude-generated context prefix prepended to each chunk at index time; improves dense embedding quality;
+- Contextual Retrieval parallelization: `CompletableFuture` + `Semaphore(3)` replaces sequential per-chunk Claude calls; reduces ingestion wall-clock time
+- Semantic chunking: replaced fixed character splitter with paragraph-aware splitter; falls back to sentence boundaries for oversized paragraphs; prevents mid-sentence cuts
+- **RAPTOR document summary**: one Claude-generated summary chunk per document at ingest time (`chunkType=document_summary`); improves recall for broad questions
+
+Retrieval
+
+- **BM25 IDF**: `SparseVectorizer` upgraded from TF-only to full BM25; corpus stats persisted to `idf_corpus.json`
 
 ---
 
 ## 🔜 Phase 11 — Auto Evaluation Framework
 
-- Locked eval set: 30–40 questions frozen and never used for tuning; prevents benchmark overfitting
-- Baseline diff script: compare two eval JSON runs, output ❌ regressions + ✅ improvements only
-- LLM-as-Judge: Claude auto-scores each answer on the locked set; replaces manual review
+- Locked eval set: Prevent benchmark overfitting, isolate the evaluation set from the tuning process.
+- Baseline Diff script: Surfaces regressions instantly by showing only changed cases, instead of reading the full report.
+- LLM-as-Judge: Catches silent regressions that pass keyword checks but fail semantically.
 
 ---
 
@@ -100,23 +109,32 @@
 
 ## 🔜 Phase 13 — Admin Dashboard
 
-- Ingestion status table with chunk count and error messages
-- Per-document chunk preview with company tags
-- Manual reprocess (re-embed without re-upload)
-- Rate limit usage monitoring per IP
-- Token management
+Knowledge Base
+- Document list: upload, status (pending/processing/failed/completed), retry on failure
+- Document detail: chunk count, company tags, file metadata
+- Delete document
+
+Prompt Management
+- View and inline-edit all prompt templates (API already exists, UI only)
+- Hot-reload without restart
+
+Token Usage
+- Per-day API token cost tracking (OpenAI + Cohere/Haiku); requires new MySQL table
 
 ---
 
 ## Backlog
 
 - Redis-backed rate limiting (required for multi-instance scale-out)
-- Document versioning: re-upload replaces old chunks automatically
-- [Retrieval] Semantic answer caching (embedding similarity, not MD5)
-- [Evaluation] Thumbs up/down feedback; stored in MySQL for retrieval quality analysis
-- [Frontend] Source chunk expander: click source chip to view full chunk text
+- [Ingestion] Document versioning: re-upload replaces old chunks automatically
 - [Ingestion] Duration queries: extract tenure dates from MySQL structured fields, append to context
+- [Retrieval] Semantic answer caching (embedding similarity, not MD5)
 - [Generation] Multi-company comparison: detect "compare X vs Y", run two scoped retrieval pipelines, merge contexts
+- [Evaluation] Thumbs up/down feedback; stored in MySQL for retrieval quality analysis
+- [Evaluation] CI gate: run smoke test on PR via GitHub Actions, block merge on failure
+- [Evaluation] Baseline eval runner: trigger from `Admin Dashboard`, persist run results in MySQL
+- [Evaluation] Eval diff UI: select two baseline runs, visualize regression/improvement in `Admin Dashboard`
+- [Frontend] Source chunk expander: click source chip to view full chunk text
 
 **High cost — skip for now:**
 
