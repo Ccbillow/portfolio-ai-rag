@@ -35,8 +35,8 @@
 
 ## ✅ Phase 5 — Reranker + Hybrid Search
 
-- **Phase 5.1:** Cohere rerank-v3.5 — retrieve 10 candidates, keep top 5 by cross-encoder score
-- **Phase 5.2:** Custom BM25 `SparseVectorizer` (in-process, no Elasticsearch); Qdrant Query API with RRF fusion; dense + sparse vectors in one point
+- **Phase 5.1:** **Cohere rerank-v3.5** — retrieve 10 candidates, keep top 5 by cross-encoder score
+- **Phase 5.2:** Custom **BM25** `SparseVectorizer` (in-process, no Elasticsearch); Qdrant Query API with RRF fusion; dense + sparse vectors in one point
 
 ---
 
@@ -50,19 +50,20 @@
 
 ## ✅ Phase 7 — Prompt Management
 
-- `prompt_template` MySQL table; hot-reload via admin API (no redeploy needed)
-- Rule-based `QuestionClassifier`: INVALID / OUT_OF_SCOPE / STRATEGIC / FACTUAL / TECHNICAL / BEHAVIORAL — zero LLM cost
+- MySQL table: `prompt_template`; hot-reload via admin API (no redeploy needed)
+- **Rule-based Agent Layer** `QuestionClassifier`: INVALID / OUT_OF_SCOPE / STRATEGIC / FACTUAL / TECHNICAL / BEHAVIORAL — zero LLM cost
 - Type-specific prompt hints injected at runtime by classifier output
 
 ---
 
-## ✅ Phase 8 — Company Isolation + Quality Hardening
+## ✅ Phase 8 — Frontend Integration + Company Isolation
 
-- `companies[]` array payload on every Qdrant point; config-driven extraction from filename + chunk text
-- Qdrant pre-filter (`should: match.any`) + post-rerank Java allowlist filter
-- `company-subgroups` config for parent-child hierarchy (Deloitte → OCBC / Sanofi)
-- Session turn limit (30/session), question length cap (300 chars)
+- Company Isolation
+	- `companies[]` array payload on every Qdrant point; config-driven extraction from filename + chunk text
+	- Qdrant pre-filter (`should: match.any`) + post-rerank Java allowlist filter
+	- `company-subgroups` config for parent-child hierarchy (Deloitte → OCBC / Sanofi)
 - Frontend integration: SSE streaming, source chips, conversation history display
+- Session turn limit (30/session), question length cap (300 chars)
 - Multiple prompt tuning rounds driven by manual baseline tests
 
 ---
@@ -72,58 +73,53 @@
 - Disabled multi-query expansion: 2 Claude calls → 1 per question (~50% cost reduction)
 - Removed sentence window expansion; increased chunk size 512 → 1000 chars to compensate
 - Reduced conversation history 3 turns → 2
-- Tightened classifier patterns; added `CONTACT_REDIRECT` type
-- Prompt artifact fixes: role accuracy rule, mandatory "At [CompanyName]" opening, output constraint banning word-count annotations
+
 
 ---
 
-## 🔜 Phase 10 — Evaluation Framework
+## 🔜 Phase 10 — Retrieval Optimization
 
-- Automated RAG evaluation (faithfulness, context recall, answer relevance)
-- Golden test set: 40–50 Q&A pairs across all question types and companies
-- Eval report generated on every config change; stored in `docs/eval/`
+- Contextual Retrieval: prepend a context description to each chunk at index time (e.g. "this chunk is from OCBC project, API gateway redesign"); requires full re-ingest; one-time Claude cost ~$0.01
 
 ---
 
-## 🔜 Phase 11 — Observability
+## 🔜 Phase 11 — Auto Evaluation Framework
+
+- Locked eval set: 30–40 questions frozen and never used for tuning; prevents benchmark overfitting
+- Baseline diff script: compare two eval JSON runs, output ❌ regressions + ✅ improvements only
+- LLM-as-Judge: Claude auto-scores each answer on the locked set; replaces manual review
+
+---
+
+## 🔜 Phase 12 — Observability
 
 - Structured JSON logging: `sessionId`, `questionType`, `focusCompany`, `numHits`, `rerankScores`, `latencyMs`
-- Prometheus metrics: retrieval hits, rerank score distribution, LLM latency p50/p95
-- OpenTelemetry traces: span per pipeline stage
-- Grafana dashboard
+- Prometheus + Grafana: retrieval hit rate, rerank score distribution, LLM latency p50/p95; add containers to existing Docker Compose
 
 ---
 
-## 🔜 Phase 12 — Answer Quality Improvements
-
-- Duration queries: extract tenure dates from MySQL structured fields, append to context
-- Multi-company comparison: detect "compare X vs Y", run two scoped retrieval pipelines, merge contexts
-- Extend conversation history to 3–4 turns for single-company sessions
-
----
-
-## 🔜 Phase 13 — Frontend Polish
-
-- Loading skeleton during stream startup
-- Source chunk expander (full chunk text on click)
-- Question suggestions on first load
-- Copy answer button, session export (PDF / markdown)
-
----
-
-## 🔜 Phase 14 — Admin Dashboard
+## 🔜 Phase 13 — Admin Dashboard
 
 - Ingestion status table with chunk count and error messages
 - Per-document chunk preview with company tags
 - Manual reprocess (re-embed without re-upload)
 - Rate limit usage monitoring per IP
+- Token management
 
 ---
 
 ## Backlog
 
 - Redis-backed rate limiting (required for multi-instance scale-out)
-- Semantic answer caching (embedding similarity, not MD5)
-- Thumbs up/down feedback; stored in MySQL for retrieval quality analysis
-- Chinese question support (classifier + prompts currently English-only)
 - Document versioning: re-upload replaces old chunks automatically
+- [Retrieval] Semantic answer caching (embedding similarity, not MD5)
+- [Evaluation] Thumbs up/down feedback; stored in MySQL for retrieval quality analysis
+- [Frontend] Source chunk expander: click source chip to view full chunk text
+- [Ingestion] Duration queries: extract tenure dates from MySQL structured fields, append to context
+- [Generation] Multi-company comparison: detect "compare X vs Y", run two scoped retrieval pipelines, merge contexts
+
+**High cost — skip for now:**
+
+- [Retrieval] HyDE: LLM generates a hypothetical answer first, embed that for retrieval
+- [Retrieval] Dual index / multi-path recall: separate dense + sparse indexes, merge client-side (Qdrant RRF already covers this)
+- [Routing] Advanced routing: LLM Classifier / Ambiguity Detection
