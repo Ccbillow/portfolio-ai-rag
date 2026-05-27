@@ -3,6 +3,7 @@ package com.simon.rag.service.impl;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.simon.rag.config.RagProperties;
+import com.simon.rag.model.eval.RerankedHit;
 import com.simon.rag.service.impl.QdrantSearchService.SearchHit;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.timeout.ReadTimeoutHandler;
@@ -16,6 +17,7 @@ import reactor.netty.http.client.HttpClient;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -25,6 +27,7 @@ public class CohereRerankService {
     private final WebClient webClient;
     private final RagProperties ragProperties;
     private final boolean hasKey;
+    private final AtomicLong lastCallTime = new AtomicLong(0);
 
     public CohereRerankService(
             WebClient.Builder webClientBuilder,
@@ -51,11 +54,13 @@ public class CohereRerankService {
      * Reranks candidates using Cohere and returns top-N in relevance order.
      * Falls back to original order (limited to topN) if API is unavailable.
      */
-    public List<SearchHit> rerank(String query, List<SearchHit> candidates) {
+    public List<RerankedHit> rerank(String query, List<SearchHit> candidates) {
         RagProperties.Reranker cfg = ragProperties.getReranker();
 
         if (!hasKey || candidates.isEmpty()) {
-            return candidates.stream().limit(cfg.getTopN()).collect(Collectors.toList());
+            return candidates.stream().limit(cfg.getTopN())
+                    .map(h -> new RerankedHit(h, h.score()))
+                    .collect(Collectors.toList());
         }
 
         List<String> documents = candidates.stream()
@@ -63,6 +68,8 @@ public class CohereRerankService {
                 .collect(Collectors.toList());
 
         try {
+            throttle(cfg.getRateLimitMs());
+
             RerankRequest request = new RerankRequest(
                     cfg.getModel(), query, documents, cfg.getTopN(), false);
 
@@ -75,7 +82,9 @@ public class CohereRerankService {
 
             if (response == null || response.results() == null || response.results().isEmpty()) {
                 log.warn("Cohere returned empty results — falling back to score order");
-                return candidates.stream().limit(cfg.getTopN()).collect(Collectors.toList());
+                return candidates.stream().limit(cfg.getTopN())
+                        .map(h -> new RerankedHit(h, h.score()))
+                        .collect(Collectors.toList());
             }
 
             double minScore = cfg.getMinRerankScore();
@@ -85,11 +94,10 @@ public class CohereRerankService {
                     .filter(r -> r.relevanceScore() >= minScore)
                     .collect(Collectors.toList());
 
-            // Always keep at least the top-1 to avoid empty context
             if (kept.isEmpty()) kept = results.subList(0, 1);
 
-            List<SearchHit> reranked = kept.stream()
-                    .map(r -> candidates.get(r.index()))
+            List<RerankedHit> reranked = kept.stream()
+                    .map(r -> new RerankedHit(candidates.get(r.index()), r.relevanceScore()))
                     .collect(Collectors.toList());
 
             log.info("Reranked {}/{} candidates → kept {}/{} (minScore={}): scores {}",
@@ -103,11 +111,32 @@ public class CohereRerankService {
 
         } catch (Exception e) {
             log.warn("Cohere rerank failed ({}), falling back to score order", e.getMessage());
-            return candidates.stream().limit(cfg.getTopN()).collect(Collectors.toList());
+            return candidates.stream().limit(cfg.getTopN())
+                    .map(h -> new RerankedHit(h, h.score()))
+                    .collect(Collectors.toList());
         }
     }
 
     // ---- Request / Response DTOs ----
+
+    /**
+     * Rate-limits Cohere API calls. Each call is spaced by at least {@code minGapMs}
+     * milliseconds to stay under the free-tier limit (100 req/min → 600 ms gap).
+     */
+    private void throttle(long minGapMs) {
+        while (true) {
+            long prev = lastCallTime.get();
+            long now = System.currentTimeMillis();
+            long next = Math.max(now, prev + minGapMs);
+            if (lastCallTime.compareAndSet(prev, next)) {
+                long waitMs = next - now;
+                if (waitMs > 0) {
+                    try { Thread.sleep(waitMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                }
+                return;
+            }
+        }
+    }
 
     private record RerankRequest(
             String model,

@@ -1,31 +1,87 @@
 spring:
   datasource:
-    url: jdbc:h2:mem:rag_test;DB_CLOSE_DELAY=-1;MODE=MySQL
-    username: sa
-    password:
-    driver-class-name: org.h2.Driver
+    url: jdbc:mysql://localhost:3306/rag_db?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: ${MYSQL_PASSWORD:ragdev123}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 2
+      maximum-pool-size: 10
 
   data:
     redis:
       host: localhost
       port: 6379
-      password:
+      password: ${REDIS_PASSWORD:}
+      database: 0
+      lettuce:
+        pool:
+          max-active: 8
+          min-idle: 2
 
 mybatis-plus:
   mapper-locations: classpath*:mapper/**/*.xml
   type-aliases-package: com.simon.rag.domain.entity
   configuration:
     map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   global-config:
     db-config:
       logic-delete-field: deleted
       logic-delete-value: 1
       logic-not-delete-value: 0
 
+cohere:
+  api-key: ${COHERE_API_KEY}
+
+langchain4j:
+  open-ai:
+    api-key: ${OPENAI_API_KEY}
+    embedding-model-name: text-embedding-3-small
+  anthropic:
+    api-key: ${ANTHROPIC_API_KEY}
+    chat-model-name: claude-haiku-4-5-20251001
+    max-tokens: 800
+
 rag:
-  jwt:
-    secret: test-secret-at-least-32-characters-long
-    expiration: 3600
+  rate-limit:
+    enabled: false
+  embedding:
+    chunk-size: 1000
+    chunk-overlap: 150
+    top-k: 4
+    min-score: 0.25
+  hybrid-search:
+    enabled: true
+  reranker:
+    enabled: true
+    candidate-k: 10
+    top-n: 5
+    model: rerank-v3.5
+    min-rerank-score: 0.18
+
+qdrant:
+  host: localhost
+  port: 6334
+  http-port: 6333
+  collection-name: rag_knowledge
+  vector-size: 1536
+
+cors:
+  allowed-origins: "http://localhost:*"
+
+jwt:
+  secret: test-secret-at-least-32-characters-long
+  expiration-hours: 1
+
+eval:
+  judge:
+    api-key: ${DEEPSEEK_API_KEY:}
+    base-url: https://api.deepseek.com
+    model: deepseek-chat
+    temperature: 0.0
+    max-candidates: 10
+    timeout-seconds: 30
 
 logging:
   level:

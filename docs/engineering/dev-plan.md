@@ -92,11 +92,13 @@ Retrieval
 
 ---
 
-## 🔜 Phase 11 — Auto Evaluation Framework
+## ✅ Phase 11 — Auto Evaluation Framework
 
-- Locked eval set: Prevent benchmark overfitting, isolate the evaluation set from the tuning process.
-- Baseline Diff script: Surfaces regressions instantly by showing only changed cases, instead of reading the full report.
-- LLM-as-Judge: Catches silent regressions that pass keyword checks but fail semantically.
+- Locked Eval Set: Prevent benchmark overfitting, isolate the evaluation set from the tuning process.
+
+- Baseline Diff Evaluation: Java-based diff runner that highlights only changed responses and severity regressions, making prompt and RAG tuning faster and easier to validate.
+
+- LLM-as-Judge: Uses DeepSeek to semantically evaluate regression candidates that pass keyword checks but degrade in answer quality or factual consistency.
 
 ---
 

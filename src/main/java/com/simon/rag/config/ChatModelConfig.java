@@ -33,6 +33,21 @@ public class ChatModelConfig {
     }
 
     /**
+     * Main async executor for @Async("taskExecutor") — IngestionRunner.ingest().
+     */
+    @Bean("taskExecutor")
+    public Executor taskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(100);
+        executor.setKeepAliveSeconds(60);
+        executor.setThreadNamePrefix("rag-async-");
+        executor.initialize();
+        return executor;
+    }
+
+    /**
      * Dedicated executor for parallel contextual retrieval Claude calls in IngestionRunner.
      * Kept separate from the main taskExecutor to prevent parent thread deadlock:
      * the @Async ingest() thread blocks on Future.join() while children run on this pool.

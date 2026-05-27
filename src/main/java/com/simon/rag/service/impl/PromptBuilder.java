@@ -72,8 +72,14 @@ public class PromptBuilder {
     }
 
     String extractFocusCompany(String question, String history) {
+        // If the question already names a subsidiary (e.g. "OCBC"), use it directly
+        // as focusCompany — no need to expand sub-project queries.
+        String lowerQuestion = question.toLowerCase();
+        String subsidiary = findSubsidiaryCompany(lowerQuestion);
+        if (subsidiary != null) return subsidiary;
+
         // Current question always takes priority
-        String fromQuestion = findCompany(question.toLowerCase());
+        String fromQuestion = findCompany(lowerQuestion);
         if (fromQuestion != null) return fromQuestion;
 
         // Fallback: use conversation history — interview sessions typically stay on one topic,
@@ -97,6 +103,15 @@ public class PromptBuilder {
             }
         }
         return null;
+    }
+
+    /** Returns a subsidiary company name found in text (any child in company-subgroups). */
+    private String findSubsidiaryCompany(String text) {
+        return ragProperties.getCompanySubgroups().values().stream()
+                .flatMap(List::stream)
+                .filter(c -> text.contains(c.toLowerCase()))
+                .findFirst()
+                .orElse(null);
     }
 
     private String findCompany(String text) {

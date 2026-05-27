@@ -74,9 +74,10 @@ rag:
   hybrid-search:
     enabled: true
   contextual-retrieval:
-    enabled: true
+    enabled: false
     max-doc-chars: 12000
     concurrency: 3
+    rate-limit-ms: 6000
   raptor:
     enabled: true
     max-doc-chars: 12000

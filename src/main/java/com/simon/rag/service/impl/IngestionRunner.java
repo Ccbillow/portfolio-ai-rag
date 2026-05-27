@@ -32,6 +32,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Async document ingestion: parse → chunk → embed (dense + sparse) → upsert to Qdrant.
@@ -59,6 +60,9 @@ public class IngestionRunner {
     @Autowired
     @Qualifier("uploadExecutor")
     private Executor uploadExecutor;
+
+    /** Tracks last Claude API call timestamp for contextual retrieval rate limiting. */
+    private final AtomicLong lastCrCallTime = new AtomicLong(0);
 
     @Async("taskExecutor")
     public void ingest(Long docId, String taskId, String fileName, String category) {
@@ -136,6 +140,7 @@ public class IngestionRunner {
                                 return seg.text();
                             }
                             try {
+                                throttleCrCall(crCfg.getRateLimitMs());
                                 String prefix = generateContextPrefix(docContext, seg.text());
                                 return prefix.isBlank() ? seg.text() : prefix + "\n\n" + seg.text();
                             } finally {
@@ -193,6 +198,7 @@ public class IngestionRunner {
                 extractCompaniesFromText(seg.text()).stream()
                         .filter(c -> !companies.contains(c))
                         .forEach(companies::add);
+                addParentCompanies(companies);
                 if (!companies.isEmpty()) payload.put("companies", companies);
 
                 points.add(new QdrantSearchService.PointData(
@@ -304,6 +310,21 @@ public class IngestionRunner {
     }
 
     /**
+     * Reverse-derives parent companies from company-subgroups config.
+     * If a chunk is tagged [OCBC], it also gets [Deloitte] so parent-company
+     * searches can find sub-project chunks without sub-project query expansion.
+     */
+    private void addParentCompanies(List<String> companies) {
+        ragProperties.getCompanySubgroups().forEach((parent, subs) -> {
+            for (String sub : subs) {
+                if (companies.contains(sub) && !companies.contains(parent)) {
+                    companies.add(parent);
+                }
+            }
+        });
+    }
+
+    /**
      * Calls Claude to generate a 1–2 sentence context description for a chunk.
      * The description is prepended to the chunk text before dense embedding so the
      * vector carries company/project/time context that raw chunks often lack.
@@ -319,6 +340,26 @@ public class IngestionRunner {
         } catch (Exception e) {
             log.warn("Context prefix generation failed, using raw chunk: {}", e.getMessage());
             return "";
+        }
+    }
+
+    /**
+     * Rate-limits contextual retrieval Claude calls to stay under the 50K-token/min
+     * Anthropic rate limit. Each call sends ~4K input tokens (maxDocChars), so a
+     * 6 s gap keeps us at ~10 calls/min ≈ 40K tokens/min with headroom.
+     */
+    private void throttleCrCall(long minGapMs) {
+        while (true) {
+            long prev = lastCrCallTime.get();
+            long now = System.currentTimeMillis();
+            long next = Math.max(now, prev + minGapMs);
+            if (lastCrCallTime.compareAndSet(prev, next)) {
+                long waitMs = next - now;
+                if (waitMs > 0) {
+                    try { Thread.sleep(waitMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                }
+                return;
+            }
         }
     }
 

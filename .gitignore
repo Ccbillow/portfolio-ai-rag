@@ -47,5 +47,10 @@ dist/
 # ===== RAG eval / test scripts (local only) =====
 docs/test/
 
+# ===== Phase 11 — gitignore generated eval artifacts; baseline.json is checked in =====
+src/test/resources/eval-reports/latest.json
+src/test/resources/eval-reports/candidates.json
+src/test/resources/eval-reports/*-report.md
+
 # ===== claude skills =====
 claude-skills/

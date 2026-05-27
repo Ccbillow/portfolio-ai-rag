@@ -88,6 +88,16 @@ public class RedisCacheService {
         }
     }
 
+    public void clearSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return;
+        try {
+            String key = CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId;
+            redisTemplate.delete(List.of(key, key + ":turns"));
+        } catch (Exception e) {
+            log.warn("Session cleanup failed: sessionId={}", sessionId);
+        }
+    }
+
     public void appendConversationHistory(String sessionId, String question, String answer) {
         if (sessionId == null || sessionId.isBlank()) return;
         try {

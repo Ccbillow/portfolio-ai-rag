@@ -55,6 +55,8 @@ public class RagProperties {
         private int maxDocChars = 12000;
         /** Max parallel Claude calls during contextual prefix generation */
         private int concurrency = 3;
+        /** Min milliseconds between Claude calls to stay under 50K-token/min rate limit */
+        private int rateLimitMs = 6000;
     }
 
     @Data
@@ -74,5 +76,7 @@ public class RagProperties {
         private String model = "rerank-v3.5";
         /** Drop reranked chunks below this score; always keeps at least 1 */
         private double minRerankScore = 0.18;
+        /** Min milliseconds between Cohere API calls to stay under rate limit */
+        private int rateLimitMs = 800;
     }
 }

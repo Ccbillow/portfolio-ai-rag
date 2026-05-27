@@ -20,5 +20,5 @@ public interface ChatService {
      * Ask a question and stream the answer token-by-token via SSE.
      * Used for real-time chat UI experience.
      */
-    SseEmitter askStream(Dtos.ChatRequest request);
+    SseEmitter  askStream(Dtos.ChatRequest request);
 }

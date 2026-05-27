@@ -30,6 +30,7 @@
 		<maven.compiler.source>${java.version}</maven.compiler.source>
 		<maven.compiler.target>${java.version}</maven.compiler.target>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<eval.excluded>eval-run,eval-diff,eval-judge</eval.excluded>
 	</properties>
 
 	<dependencies>
@@ -332,6 +333,7 @@
 						<include>**/*Test.java</include>
 						<include>**/*Tests.java</include>
 					</includes>
+					<excludedGroups>${eval.excluded}</excludedGroups>
 				</configuration>
 			</plugin>
 

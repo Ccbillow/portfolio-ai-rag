@@ -48,7 +48,7 @@ public class SparseVectorizer {
             "it", "its", "this", "that", "these", "those",
             "i", "my", "me", "we", "our", "you", "your", "he", "she", "they", "them",
             "as", "if", "so", "also", "then", "than", "when", "which", "who", "what",
-            "all", "each", "more", "some", "such", "there", "their", "they"
+            "all", "each", "more", "some", "such", "there", "their"
     );
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
