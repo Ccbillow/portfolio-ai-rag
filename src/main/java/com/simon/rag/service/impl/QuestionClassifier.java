@@ -34,7 +34,10 @@ public class QuestionClassifier {
             "(?i)(\\bphone\\s*(number)?\\b|\\bemail\\s*(address)?\\b|" +
             "\\bcontact\\s*(number|detail|info|method)\\b|" +
             "how (can|do|should) (i|we|you) (reach|contact|call|email)|" +
-            "\\breach you\\b|\\bget in touch\\b|\\bhow to contact\\b)");
+            "\\breach you\\b|\\bget in touch\\b|\\bhow to contact\\b|" +
+            "\\b(resume|pdf|cv)\\s*(link|download|file)\\b|" +
+            "\\b(link|download)\\s*(to|your|the)?\\s*(resume|cv|pdf)?\\b|" +
+            "\\bnum[bp]der\\b|\\bemial\\b|\\bcontact\\s*(numb|numer|numbd))");
 
     private static final Pattern STRATEGIC_PATTERN = Pattern.compile(
             "(?i)\\b(salary|salaries|compensation|package|pay rate|ctc|" +
@@ -48,6 +51,14 @@ public class QuestionClassifier {
             "disagree.*(?:my |your |the )?(?:manager|boss|supervisor|director|lead)|" +
             "difficult.*(?:manager|colleague|coworker)|" +
             "why should we (?:hire|choose) you over|what makes you better than)\\b");
+
+    private static final Pattern PERSONAL_PATTERN = Pattern.compile(
+            "(?i)\\b(do you have (?:children|kids|a family)|" +
+            "are you married|what is your marital status|" +
+            "how old are you|what is your age|" +
+            "do you (?:smoke|drink|have a (?:car|house))|" +
+            "what is your religion|what is your race|" +
+            "are you (?:male|female)|what is your gender)\\b");
 
     private static final Pattern FACTUAL_PATTERN = Pattern.compile(
             "(?i)^(how long|how many|how old|how far|how well|" +
@@ -110,9 +121,13 @@ public class QuestionClassifier {
         if (STRATEGIC_PATTERN.matcher(trimmed).find())
             return QuestionType.STRATEGIC;
 
-        // 3.5. CONTACT_REDIRECT — phone / email → redirect to resume
+        // 3.5. CONTACT_REDIRECT — phone / email / link → redirect to resume
         if (CONTACT_REDIRECT_PATTERN.matcher(trimmed).find())
             return QuestionType.CONTACT_REDIRECT;
+
+        // 3.6. PERSONAL — non-work personal questions → redirect to work topics
+        if (PERSONAL_PATTERN.matcher(trimmed).find())
+            return QuestionType.PERSONAL;
 
         // 4. FACTUAL
         if (FACTUAL_PATTERN.matcher(trimmed).find())
@@ -140,6 +155,9 @@ public class QuestionClassifier {
                 "Feel free to ask about my engineering background, projects, or technical experience.";
             case CONTACT_REDIRECT ->
                 "For contact details, please download my resume — the link is on this page.";
+            case PERSONAL ->
+                "That's outside what I can help with here. " +
+                "Feel free to ask about my engineering background, projects, or technical experience.";
             case STRATEGIC    ->
                 "That's a great topic to explore together. " +
                 "I'd prefer to discuss specifics in our conversation — happy to align on expectations then.";
