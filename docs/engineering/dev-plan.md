@@ -102,14 +102,28 @@ Retrieval
 
 ---
 
-## 🔜 Phase 12 — Observability
+## 🔜 Phase 12 — Ingestion Optimization (Intent-Aligned Chunking)
+
+Evolved chunking from naive fixed-size -> simple text splitting -> retrieval-oriented segmentation aligned with interview question intent.
+
+- Metadata-aware Chunks: Added structured metadata (company, project, skills, behavioral tags) to improve retrieval precision beyond embeddings.
+
+- Query Intent Classification: Introduced mapping from natural language questions to structured intents (e.g. leadership, production issue, system design).
+
+- Retrieval Filtering: Combined vector search with metadata filters in Qdrant to reduce noise and improve relevance.
+
+- Context Expansion: Expanded retrieved chunks with parent/adjacent context to ensure completeness for STAR-style answers.
+
+---
+
+## 🔜 Phase 13 — Observability
 
 - Structured JSON logging: `sessionId`, `questionType`, `focusCompany`, `numHits`, `rerankScores`, `latencyMs`
 - Prometheus + Grafana: retrieval hit rate, rerank score distribution, LLM latency p50/p95; add containers to existing Docker Compose
 
 ---
 
-## 🔜 Phase 13 — Admin Dashboard
+## 🔜 Phase 14 — Admin Dashboard
 
 Knowledge Base
 - Document list: upload, status (pending/processing/failed/completed), retry on failure
