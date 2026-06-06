@@ -12,6 +12,7 @@ import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -74,6 +75,7 @@ public class ChunkMetadataEnricher {
 
     private final ChatLanguageModel chatLanguageModel;
     private final ObjectMapper objectMapper;
+    private final Executor executor;
 
     @Value("${rag.metadata-enrichment.enabled:true}")
     private boolean enabled;
@@ -81,9 +83,12 @@ public class ChunkMetadataEnricher {
     @Value("${rag.metadata-enrichment.concurrency:3}")
     private int concurrency;
 
-    public ChunkMetadataEnricher(ChatLanguageModel chatLanguageModel, ObjectMapper objectMapper) {
+    public ChunkMetadataEnricher(ChatLanguageModel chatLanguageModel,
+                                  ObjectMapper objectMapper,
+                                  @Qualifier("uploadExecutor") Executor executor) {
         this.chatLanguageModel = chatLanguageModel;
         this.objectMapper = objectMapper;
+        this.executor = executor;
     }
 
     public List<EnrichmentResult> enrichAll(List<TextSegment> segments) {
@@ -106,7 +111,7 @@ public class ChunkMetadataEnricher {
                 } finally {
                     semaphore.release();
                 }
-            });
+            }, executor);
             futures.add(future);
         }
 

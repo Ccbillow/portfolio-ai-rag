@@ -1,6 +1,9 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.comm.enums.BehavioralTag;
+import com.simon.rag.comm.enums.ChunkType;
 import com.simon.rag.comm.enums.IngestionStatus;
+import com.simon.rag.comm.enums.IntentTag;
 import com.simon.rag.comm.enums.PromptKey;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
@@ -25,9 +28,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -53,6 +58,8 @@ public class IngestionRunner {
     private final RedisCacheService redisCacheService;
     private final RagProperties ragProperties;
     private final PromptTemplateService promptTemplateService;
+    private final MarkdownHeadingChunkSplitter markdownSplitter;
+    private final ChunkMetadataEnricher metadataEnricher;
 
     private final Tika tika = new Tika();
 
@@ -77,25 +84,45 @@ public class IngestionRunner {
             }
             log.info("Tika parsed {} chars from '{}'", text.length(), fileName);
 
-            // 3. Semantic chunking: split on paragraph boundaries, fall back to sentence split for
-            //    oversized paragraphs. Avoids mid-sentence cuts from fixed character splitting.
+            // 3. Split: markdown heading splitter for .md files, semantic paragraph split for others
             RagProperties.Embedding cfg = ragProperties.getEmbedding();
-            List<String> rawChunks = semanticSplit(text, cfg.getChunkSize(), cfg.getChunkOverlap());
-            log.info("Semantic split: {} chunks from '{}' ({} chars)", rawChunks.size(), fileName, text.length());
+            List<TextSegment> segments;
 
-            // 4. Attach metadata
-            List<TextSegment> segments = new ArrayList<>();
-            for (int i = 0; i < rawChunks.size(); i++) {
-                Metadata meta = new Metadata();
-                meta.put("docId", String.valueOf(docId));
-                meta.put("fileName", fileName);
-                meta.put("category", category);
-                meta.put("chunkIndex", String.valueOf(i));
-                meta.put("chunkTotal", String.valueOf(rawChunks.size()));
-                segments.add(TextSegment.from(rawChunks.get(i), meta));
+            if (markdownSplitter.isMarkdown(fileName, text)) {
+                log.info("Markdown heading splitter for '{}'", fileName);
+                List<TextSegment> mdSegments = markdownSplitter.split(text);
+                segments = new ArrayList<>();
+                for (int i = 0; i < mdSegments.size(); i++) {
+                    TextSegment seg = mdSegments.get(i);
+                    seg.metadata()
+                        .put("docId", String.valueOf(docId))
+                        .put("fileName", fileName)
+                        .put("category", category)
+                        .put("chunkIndex", String.valueOf(i))
+                        .put("chunkTotal", String.valueOf(mdSegments.size()));
+                    segments.add(seg);
+                }
+                log.info("Markdown split: {} chunks from '{}'", segments.size(), fileName);
+            } else {
+                List<String> rawChunks = semanticSplit(text, cfg.getChunkSize(), cfg.getChunkOverlap());
+                log.info("Semantic split: {} chunks from '{}' ({} chars)", rawChunks.size(), fileName, text.length());
+                segments = new ArrayList<>();
+                for (int i = 0; i < rawChunks.size(); i++) {
+                    Metadata meta = new Metadata();
+                    meta.put("docId", String.valueOf(docId));
+                    meta.put("fileName", fileName);
+                    meta.put("category", category);
+                    meta.put("chunkIndex", String.valueOf(i));
+                    meta.put("chunkTotal", String.valueOf(rawChunks.size()));
+                    segments.add(TextSegment.from(rawChunks.get(i), meta));
+                }
             }
 
-            // 4b. RAPTOR: prepend a document-level summary chunk for high-level recall.
+            // 4. Metadata enrichment — runs in parallel (Semaphore(3)), before RAPTOR
+            List<ChunkMetadataEnricher.EnrichmentResult> enrichments = metadataEnricher.enrichAll(segments);
+            log.info("Metadata enrichment done. chunks={} fileName={}", segments.size(), fileName);
+
+            // 5. RAPTOR: prepend a document-level summary chunk for high-level recall.
             //     Improves retrieval for broad questions ("tell me about your Alipay experience").
             RagProperties.Raptor raptorCfg = ragProperties.getRaptor();
             if (raptorCfg.isEnabled()) {
@@ -109,8 +136,8 @@ public class IngestionRunner {
                     summaryMeta.put("fileName", fileName);
                     summaryMeta.put("category", category);
                     summaryMeta.put("chunkIndex", "summary");
-                    summaryMeta.put("chunkTotal", String.valueOf(rawChunks.size()));
-                    summaryMeta.put("chunkType", "document_summary");
+                    summaryMeta.put("chunkTotal", String.valueOf(segments.size()));
+                    summaryMeta.put("chunkType", ChunkType.DOCUMENT_SUMMARY.getValue());
                     segments.add(0, TextSegment.from(summary, summaryMeta));
                     log.info("RAPTOR: summary generated ({} chars)", summary.length());
                 }
@@ -164,9 +191,6 @@ public class IngestionRunner {
                 embeddings.addAll(embeddingModel.embedAll(batch).content());
             }
 
-            // Filename-level companies — non-empty means the whole file is scoped to those companies.
-            List<String> fileCompanies = extractCompaniesFromText(fileName);
-
             // 7. Build Qdrant points with dense + sparse vectors
             List<QdrantSearchService.PointData> points = new ArrayList<>();
             for (int i = 0; i < segments.size(); i++) {
@@ -190,16 +214,34 @@ public class IngestionRunner {
                 payload.put("chunkIndex",  meta.getString("chunkIndex"));
                 payload.put("chunkTotal",  meta.getString("chunkTotal"));
 
-                // Union of filename companies and companies found in chunk text.
-                // Filename tag (e.g. "Deloitte") is always the base; chunk text scan adds
-                // sub-project labels (e.g. "OCBC", "Sanofi") on top of it.
-                // If filename has no company, chunk text alone determines the tag.
-                List<String> companies = new ArrayList<>(fileCompanies);
-                extractCompaniesFromText(seg.text()).stream()
-                        .filter(c -> !companies.contains(c))
-                        .forEach(companies::add);
-                addParentCompanies(companies);
+                // Phase 12: merge companies from heading metadata + filename + chunk text
+                List<String> companies = buildCompanies(fileName, seg);
                 if (!companies.isEmpty()) payload.put("companies", companies);
+
+                // Phase 12: enrichment metadata
+                boolean isSummary = "summary".equals(meta.getString("chunkIndex"));
+                ChunkMetadataEnricher.EnrichmentResult enr;
+                if (isSummary) {
+                    enr = ChunkMetadataEnricher.EnrichmentResult.empty();
+                    payload.put("chunk_type", ChunkType.DOCUMENT_SUMMARY.getValue());
+                    payload.put("chunk_id", docId + "_summary");
+                    payload.put("chunk_index", -1);
+                } else {
+                    int enrIdx = Integer.parseInt(meta.getString("chunkIndex"));
+                    enr = enrichments.get(enrIdx);
+                    payload.put("chunk_type", enr.chunkType() != null
+                            ? enr.chunkType().getValue() : "");
+                    payload.put("chunk_id", docId + "_chunk_" + i);
+                    payload.put("chunk_index", i);
+                }
+                payload.put("intent_tags", enr.intentTags().stream()
+                        .map(IntentTag::getValue).toList());
+                payload.put("behavioral_tags", enr.behavioralTags().stream()
+                        .map(BehavioralTag::getValue).toList());
+                payload.put("project", enr.project());
+                payload.put("skills", enr.skills());
+                payload.put("parent_id", docId);
+                payload.put("chunk_total", segments.size());
 
                 points.add(new QdrantSearchService.PointData(
                         UUID.randomUUID().toString(), vectors, payload));
@@ -322,6 +364,30 @@ public class IngestionRunner {
                 }
             }
         });
+    }
+
+    /**
+     * Phase 12: merge companies from heading metadata + chunk text + filename.
+     * If the markdown heading contains a company name, it takes priority as the
+     * most reliable signal for this specific chunk.
+     */
+    private List<String> buildCompanies(String fileName, TextSegment segment) {
+        Set<String> companies = new LinkedHashSet<>();
+
+        String heading = segment.metadata().getString("heading");
+        if (heading != null && !heading.isBlank()) {
+            companies.addAll(extractCompaniesFromText(heading));
+        }
+
+        if (companies.isEmpty()) {
+            companies.addAll(extractCompaniesFromText(fileName));
+        }
+
+        companies.addAll(extractCompaniesFromText(segment.text()));
+
+        List<String> result = new ArrayList<>(companies);
+        addParentCompanies(result);
+        return result;
     }
 
     /**
