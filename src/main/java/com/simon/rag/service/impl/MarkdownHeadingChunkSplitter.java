@@ -37,7 +37,7 @@ public class MarkdownHeadingChunkSplitter {
 
         for (String line : lines) {
             if (line.startsWith("### ") || line.startsWith("## ")) {
-                if (!currentBody.isEmpty()) {
+                if (!currentBody.toString().isBlank()) {
                     flush(result, currentHeading, currentBody.toString(), docHeading);
                 }
                 currentHeading = line.replaceFirst("^#{2,3} ", "").trim();
@@ -48,7 +48,7 @@ public class MarkdownHeadingChunkSplitter {
                 currentBody.append(line).append("\n");
             }
         }
-        if (!currentBody.isEmpty()) {
+        if (!currentBody.toString().isBlank()) {
             flush(result, currentHeading, currentBody.toString(), docHeading);
         }
         return result;
@@ -61,6 +61,8 @@ public class MarkdownHeadingChunkSplitter {
         String text = heading.isBlank()
                 ? body.strip()
                 : heading + "\n\n" + body.strip();
+
+        if (text.isBlank()) return;
 
         if (text.length() <= maxChunkSize) {
             TextSegment segment = TextSegment.from(text,
