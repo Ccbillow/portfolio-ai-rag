@@ -2,6 +2,7 @@ package com.simon.rag.service.impl;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.simon.rag.comm.enums.IntentTag;
 import com.simon.rag.service.impl.SparseVectorizer.SparseVector;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -148,6 +149,110 @@ public class QdrantSearchService {
 
     public List<SearchHit> hybridSearch(float[] denseVector, SparseVector sparseVec, int limit) {
         return hybridSearch(denseVector, sparseVec, limit, null);
+    }
+
+    /**
+     * Hybrid search with intent routing and chunk_type exclusion.
+     * Extends hybridSearch() with two additional filters:
+     *   - should: intent_tags must match at least one classified intent (OR logic)
+     *   - must_not: excludes background / document_summary chunks (low retrieval value for story questions)
+     *
+     * Fallback: if the filtered query returns 0 hits (e.g. old chunks without intent_tags),
+     * retries with the plain hybridSearch() to guarantee results.
+     */
+    public List<SearchHit> hybridSearchWithIntentFilter(
+            float[] denseVector, SparseVector sparseVec, int limit,
+            String company, List<IntentTag> intentTags) {
+
+        // No intents classified → skip new filters, delegate to existing method
+        if (intentTags == null || intentTags.isEmpty()) {
+            return hybridSearch(denseVector, sparseVec, limit, company);
+        }
+
+        Map<String, Object> filter = buildIntentFilter(company, intentTags);
+        int prefetchLimit = limit * 2;
+
+        Map<String, Object> densePrefetch = new java.util.LinkedHashMap<>();
+        densePrefetch.put("query", denseVector);
+        densePrefetch.put("using", "dense");
+        densePrefetch.put("limit", prefetchLimit);
+        densePrefetch.put("filter", filter);
+
+        Map<String, Object> sparsePrefetch = new java.util.LinkedHashMap<>();
+        sparsePrefetch.put("query", Map.of("indices", sparseVec.indices(), "values", sparseVec.values()));
+        sparsePrefetch.put("using", "sparse");
+        sparsePrefetch.put("limit", prefetchLimit);
+        sparsePrefetch.put("filter", filter);
+
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("prefetch", List.of(densePrefetch, sparsePrefetch));
+        body.put("query", Map.of("fusion", "rrf"));
+        body.put("limit", limit);
+        body.put("with_payload", true);
+
+        QueryResponse response = qdrantWebClient.post()
+                .uri("/collections/{name}/points/query", collectionName)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(body)
+                .retrieve()
+                .onStatus(status -> status.is4xxClientError() || status.is5xxServerError(),
+                        resp -> resp.bodyToMono(String.class).map(errBody -> {
+                            log.error("Qdrant hybrid+intent error {}: {}", resp.statusCode(), errBody);
+                            return new RuntimeException("Qdrant error: " + errBody);
+                        }))
+                .bodyToMono(QueryResponse.class)
+                .block();
+
+        if (response == null || response.result() == null || response.result().points() == null) {
+            log.warn("Qdrant hybrid+intent returned null, falling back to plain hybrid. intents={}", intentTags);
+            return hybridSearch(denseVector, sparseVec, limit, company);
+        }
+
+        List<SearchHit> hits = response.result().points().stream().map(this::toSearchHit).toList();
+        log.info("Hybrid+intent search (RRF): {} hits (limit={}, company={}, intents={})",
+                hits.size(), limit, company, intentTags);
+
+        if (hits.isEmpty()) {
+            log.warn("Intent filter yielded 0 hits (old chunks may lack intent_tags), falling back. company={}, intents={}",
+                    company, intentTags);
+            return hybridSearch(denseVector, sparseVec, limit, company);
+        }
+
+        return hits;
+    }
+
+    /**
+     * Builds a combined Qdrant filter for intent-aware retrieval:
+     *   must     → company scope (same semantics as companyFilter())
+     *   should   → intent_tags OR match (chunk answers at least one of the classified intents)
+     *   must_not → excludes background / document_summary (not useful for STAR-style questions)
+     *
+     * All three clauses are optional — only populated when the corresponding input is present.
+     */
+    private Map<String, Object> buildIntentFilter(String company, List<IntentTag> intentTags) {
+        List<Object> mustClauses    = new java.util.ArrayList<>();
+        List<Object> shouldClauses  = new java.util.ArrayList<>();
+        List<Object> mustNotClauses = new java.util.ArrayList<>();
+
+        // Company → must (array containment: companies[] includes this company)
+        if (company != null && !company.isBlank()) {
+            mustClauses.add(Map.of("key", "companies", "match", Map.of("value", company)));
+        }
+
+        // Intent → should (OR: chunk must match at least one of the classified intents)
+        intentTags.forEach(tag ->
+                shouldClauses.add(Map.of("key", "intent_tags", "match", Map.of("value", tag.getValue())))
+        );
+
+        // Chunk type exclusion — background / document_summary add noise for story questions
+        mustNotClauses.add(Map.of("key", "chunk_type", "match", Map.of("value", "background")));
+        mustNotClauses.add(Map.of("key", "chunk_type", "match", Map.of("value", "document_summary")));
+
+        Map<String, Object> filter = new java.util.LinkedHashMap<>();
+        if (!mustClauses.isEmpty())    filter.put("must",     mustClauses);
+        if (!shouldClauses.isEmpty())  filter.put("should",   shouldClauses);
+        if (!mustNotClauses.isEmpty()) filter.put("must_not", mustNotClauses);
+        return filter;
     }
 
     /**
