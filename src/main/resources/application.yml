@@ -78,6 +78,11 @@ rag:
     max-doc-chars: 12000
     concurrency: 3
     rate-limit-ms: 6000
+  metadata-enrichment:
+    enabled: true
+    concurrency: 3
+  intent-classifier:
+    llm-fallback: true
   raptor:
     enabled: true
     max-doc-chars: 12000

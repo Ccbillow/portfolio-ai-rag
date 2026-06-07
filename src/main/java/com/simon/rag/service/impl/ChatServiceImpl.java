@@ -1,6 +1,7 @@
 package com.simon.rag.service.impl;
 
 import com.simon.rag.comm.constant.CacheConstant;
+import com.simon.rag.comm.enums.IntentTag;
 import com.simon.rag.comm.enums.QuestionType;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.domain.dto.Dtos;
@@ -50,6 +51,7 @@ public class ChatServiceImpl implements ChatService {
     private final CohereRerankService cohereRerankService;
     private final SparseVectorizer sparseVectorizer;
     private final QuestionClassifier questionClassifier;
+    private final QueryIntentClassifier queryIntentClassifier;
 
     @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
     private String modelName;
@@ -103,9 +105,13 @@ public class ChatServiceImpl implements ChatService {
         List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
         List<String> siblings = getSiblingCompanies(focusCompany);
 
-        // 3. Dense + sparse hybrid retrieval from Qdrant
+        // 3. Phase 12: classify intent on original question, then hybrid retrieval
+        List<IntentTag> intentTags = queryIntentClassifier.classify(question);
         long t0 = System.currentTimeMillis();
-        List<SearchHit> candidates = retrieveCandidates(queries, cfg, focusCompany, siblings);
+        List<SearchHit> candidates = retrieveCandidates(queries, cfg, focusCompany, siblings, intentTags);
+        log.info("[Chat] sessionId={} intentTags={} question={}",
+                sessionId, intentTags,
+                question.length() > 80 ? question.substring(0, 80) + "…" : question);
         long t1 = System.currentTimeMillis();
 
         // 4. Cohere rerank → company allowlist filter
@@ -332,7 +338,7 @@ public class ChatServiceImpl implements ChatService {
      */
     List<SearchHit> retrieveCandidates(List<String> queries,
                                        RagProperties.Embedding cfg, String focusCompany,
-                                       List<String> siblings) {
+                                       List<String> siblings, List<IntentTag> intentTags) {
         RagProperties.Reranker rerankCfg = ragProperties.getReranker();
         boolean useHybrid = ragProperties.getHybridSearch().isEnabled();
         int fetchLimit = rerankCfg.isEnabled() ? rerankCfg.getCandidateK() : cfg.getTopK();
@@ -343,7 +349,8 @@ public class ChatServiceImpl implements ChatService {
                 float[] dense = embedQuestion(q);
                 SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(q);
                 if (!sparse.isEmpty()) {
-                    qdrantSearchService.hybridSearch(dense, sparse, fetchLimit, focusCompany)
+                    qdrantSearchService.hybridSearchWithIntentFilter(
+                            dense, sparse, fetchLimit, focusCompany, intentTags)
                             .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
                 } else {
                     log.warn("Sparse vector empty for query '{}', using dense only", q);
