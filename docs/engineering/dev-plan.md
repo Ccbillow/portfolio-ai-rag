@@ -102,7 +102,7 @@ Retrieval
 
 ---
 
-## 🔜 Phase 12 — Ingestion Optimization (Intent-Aligned Chunking)
+## ✅ Phase 12 — Ingestion Optimization (Intent-Aligned Chunking)
 
 Evolved chunking from naive fixed-size -> simple text splitting -> retrieval-oriented segmentation aligned with interview question intent.
 
