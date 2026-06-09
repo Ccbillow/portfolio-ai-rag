@@ -223,35 +223,33 @@ public class QdrantSearchService {
 
     /**
      * Builds a combined Qdrant filter for intent-aware retrieval:
-     *   must     → company scope (same semantics as companyFilter())
-     *   should   → intent_tags OR match (chunk answers at least one of the classified intents)
-     *   must_not → excludes background / document_summary (not useful for STAR-style questions)
+     *   must   → company scope (same semantics as companyFilter())
+     *   should → intent_tags boost (chunks matching classified intents score higher)
      *
-     * All three clauses are optional — only populated when the corresponding input is present.
+     * When must is present, Qdrant treats should as a scoring boost, not a hard filter.
+     * No must_not — Cohere rerank handles relevance; hard-excluding document_summary
+     * hurts broad questions (e.g. "tell me about yourself") that rely on RAPTOR summaries.
      */
     private Map<String, Object> buildIntentFilter(String company, List<IntentTag> intentTags) {
-        List<Object> mustClauses    = new java.util.ArrayList<>();
-        List<Object> shouldClauses  = new java.util.ArrayList<>();
-        List<Object> mustNotClauses = new java.util.ArrayList<>();
+        List<Object> mustClauses   = new java.util.ArrayList<>();
+        List<Object> shouldClauses = new java.util.ArrayList<>();
 
-        // Company → must (array containment: companies[] includes this company)
+        // Company → must (array containment: companies[] includes this company).
+        // Use "any" (contains) not "value" (exact match) — chunks often carry
+        // multiple company labels, e.g. ["OCBC","Deloitte"] for sub-project chunks.
         if (company != null && !company.isBlank()) {
-            mustClauses.add(Map.of("key", "companies", "match", Map.of("value", company)));
+            mustClauses.add(Map.of("key", "companies", "match", Map.of("any", List.of(company))));
         }
 
-        // Intent → should (OR: chunk must match at least one of the classified intents)
+        // Intent → should (scoring boost, not a hard filter, so broad questions
+        // still reach all chunks while specific STAR questions get relevant boost)
         intentTags.forEach(tag ->
                 shouldClauses.add(Map.of("key", "intent_tags", "match", Map.of("value", tag.getValue())))
         );
 
-        // Chunk type exclusion — background / document_summary add noise for story questions
-        mustNotClauses.add(Map.of("key", "chunk_type", "match", Map.of("value", "background")));
-        mustNotClauses.add(Map.of("key", "chunk_type", "match", Map.of("value", "document_summary")));
-
         Map<String, Object> filter = new java.util.LinkedHashMap<>();
-        if (!mustClauses.isEmpty())    filter.put("must",     mustClauses);
-        if (!shouldClauses.isEmpty())  filter.put("should",   shouldClauses);
-        if (!mustNotClauses.isEmpty()) filter.put("must_not", mustNotClauses);
+        if (!mustClauses.isEmpty())   filter.put("must",   mustClauses);
+        if (!shouldClauses.isEmpty()) filter.put("should", shouldClauses);
         return filter;
     }
 

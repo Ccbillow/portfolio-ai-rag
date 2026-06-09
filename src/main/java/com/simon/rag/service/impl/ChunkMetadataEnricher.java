@@ -97,17 +97,21 @@ public class ChunkMetadataEnricher {
             return segments.stream().map(s -> EnrichmentResult.empty()).toList();
         }
 
+        // Submit tasks with external semaphore gating — only concurrency-many tasks
+        // ever enter the executor, so pool threads never block waiting for a permit.
         Semaphore semaphore = new Semaphore(concurrency);
         List<CompletableFuture<EnrichmentResult>> futures = new ArrayList<>();
 
         for (TextSegment segment : segments) {
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
             CompletableFuture<EnrichmentResult> future = CompletableFuture.supplyAsync(() -> {
                 try {
-                    semaphore.acquire();
                     return enrich(segment.text());
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return EnrichmentResult.empty();
                 } finally {
                     semaphore.release();
                 }
@@ -133,8 +137,9 @@ public class ChunkMetadataEnricher {
                     UserMessage.from(USER_TEMPLATE.formatted(trimText(text)))
             ));
 
+            String raw = stripMarkdownFences(response.content().text().strip());
             @SuppressWarnings("unchecked")
-            Map<String, Object> json = objectMapper.readValue(response.content().text().strip(), Map.class);
+            Map<String, Object> json = objectMapper.readValue(raw, Map.class);
 
             return EnrichmentResult.builder()
                     .project(stringOrEmpty(json, "project"))
@@ -192,6 +197,20 @@ public class ChunkMetadataEnricher {
 
     private String trimText(String text) {
         return text.length() > 2000 ? text.substring(0, 2000) + "…" : text;
+    }
+
+    /** Strips markdown code fences that some Claude models insist on wrapping JSON in. */
+    private String stripMarkdownFences(String raw) {
+        String s = raw.strip();
+        if (s.startsWith("```")) {
+            int start = s.indexOf('\n');
+            if (start < 0) start = 3;
+            else start = start + 1;
+            int end = s.lastIndexOf("```");
+            if (end < 0) end = s.length();
+            s = s.substring(start, end).strip();
+        }
+        return s;
     }
 
     // ── Result DTO ──────────────────────────────────────────────────────────

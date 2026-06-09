@@ -57,11 +57,12 @@ public class CohereRerankService {
     public List<RerankedHit> rerank(String query, List<SearchHit> candidates) {
         RagProperties.Reranker cfg = ragProperties.getReranker();
 
-        if (!hasKey || candidates.isEmpty()) {
+        if (!cfg.isEnabled() || !hasKey || candidates.isEmpty() || candidates.size() <= 2) {
             return candidates.stream().limit(cfg.getTopN())
                     .map(h -> new RerankedHit(h, h.score()))
                     .collect(Collectors.toList());
         }
+
 
         List<String> documents = candidates.stream()
                 .map(SearchHit::text)

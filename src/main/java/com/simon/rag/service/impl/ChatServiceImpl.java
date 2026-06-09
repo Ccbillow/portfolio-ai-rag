@@ -79,8 +79,13 @@ public class ChatServiceImpl implements ChatService {
             long retrieveMs,
             long rerankMs
     ) {
-        boolean hasEarlyReturn() { return earlyReturn != null; }
-        boolean noHits()         { return hits != null && hits.isEmpty(); }
+        boolean hasEarlyReturn() {
+            return earlyReturn != null;
+        }
+
+        boolean noHits() {
+            return hits != null && hits.isEmpty();
+        }
     }
 
     /**
@@ -98,7 +103,6 @@ public class ChatServiceImpl implements ChatService {
 
         // 2. Query preparation — history, focus company, query expansion, sub-project queries
         RagProperties.Embedding cfg = ragProperties.getEmbedding();
-        RagProperties.Reranker rerankCfg = ragProperties.getReranker();
         String history        = redisCacheService.getConversationHistory(sessionId);
         String focusCompany   = promptBuilder.extractFocusCompany(question, history);
         String retrievalQuery = resolveRetrievalQuery(question, history, focusCompany);
@@ -106,7 +110,14 @@ public class ChatServiceImpl implements ChatService {
         List<String> siblings = getSiblingCompanies(focusCompany);
 
         // 3. Phase 12: classify intent on original question, then hybrid retrieval
-        List<IntentTag> intentTags = queryIntentClassifier.classify(question);
+        List<IntentTag> intentTags;
+        if (type == QuestionType.FACTUAL) {
+            intentTags = List.of();
+            log.info("[Chat] FACTUAL question detected, skipping intent classification. q='{}'", question);
+        } else {
+            intentTags = queryIntentClassifier.classify(question);
+            log.info("[Chat] sessionId={} intentTags={} question={}", sessionId, intentTags, question);
+        }
         long t0 = System.currentTimeMillis();
         List<SearchHit> candidates = retrieveCandidates(queries, cfg, focusCompany, siblings, intentTags);
         log.info("[Chat] sessionId={} intentTags={} question={}",
@@ -115,7 +126,7 @@ public class ChatServiceImpl implements ChatService {
         long t1 = System.currentTimeMillis();
 
         // 4. Cohere rerank → company allowlist filter
-        List<RerankedHit> ranked = rerankCfg.isEnabled()
+        List<RerankedHit> ranked = type != QuestionType.FACTUAL
                 ? cohereRerankService.rerank(retrievalQuery, candidates)
                 : candidates.stream().map(h -> new RerankedHit(h, h.score())).toList();
         List<RerankedHit> hits = applyCompanyFilter(ranked, focusCompany, siblings);
@@ -140,7 +151,7 @@ public class ChatServiceImpl implements ChatService {
         // 1. Cache check — disabled until production (rag.cache.enabled: false)
         String cacheKey = CacheConstant.CHAT_CACHE_PREFIX
                 + DigestUtils.md5DigestAsHex(
-                    (request.getSessionId() + ":" + request.getQuestion()).getBytes(StandardCharsets.UTF_8));
+                (request.getSessionId() + ":" + request.getQuestion()).getBytes(StandardCharsets.UTF_8));
         if (ragProperties.getCache().isEnabled()) {
             Vos.ChatResponse cached = redisCacheService.getChatCache(cacheKey, start);
             if (cached != null) return cached;
@@ -232,7 +243,8 @@ public class ChatServiceImpl implements ChatService {
                 emitter.send(SseEmitter.event().name("error")
                         .data("TBot is taking longer than expected. Please try again."));
                 emitter.complete();
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
         });
         try {
             // 1. Session limit gate
@@ -264,7 +276,7 @@ public class ChatServiceImpl implements ChatService {
 
             emitter.send(SseEmitter.event().name("sources").data(toSources(retrieval.hits())));
 
-            String question  = request.getQuestion();
+            String question = request.getQuestion();
             String sessionId = request.getSessionId();
 
             // 3. Call Claude (streaming)
@@ -350,7 +362,7 @@ public class ChatServiceImpl implements ChatService {
                 SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(q);
                 if (!sparse.isEmpty()) {
                     qdrantSearchService.hybridSearchWithIntentFilter(
-                            dense, sparse, fetchLimit, focusCompany, intentTags)
+                                    dense, sparse, fetchLimit, focusCompany, intentTags)
                             .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
                 } else {
                     log.warn("Sparse vector empty for query '{}', using dense only", q);
@@ -368,7 +380,7 @@ public class ChatServiceImpl implements ChatService {
      * Package-private for EvalChatServiceImpl reuse.
      */
     List<RerankedHit> applyCompanyFilter(List<RerankedHit> ranked,
-                                          String focusCompany, List<String> siblings) {
+                                         String focusCompany, List<String> siblings) {
         if (focusCompany == null) return ranked;
         Set<String> allowed = buildAllowedCompanies(focusCompany, siblings);
         return ranked.stream()
@@ -387,7 +399,7 @@ public class ChatServiceImpl implements ChatService {
      * First occurrence wins (highest score), sorted desc, capped at limit.
      */
     private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg,
-                                         int limit, String focusCompany, List<String> siblings) {
+                                        int limit, String focusCompany, List<String> siblings) {
         LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
         for (String query : queries) {
             float[] vector = embedQuestion(query);
@@ -407,16 +419,16 @@ public class ChatServiceImpl implements ChatService {
     /**
      * When a follow-up question contains ambiguous pronouns (it/that/there/this/they/those),
      * prefix the retrieval query with the last answer snippet from history.
-     *
+     * <p>
      * Why answer, not question:
-     *   The answer contains concrete entities (company names, system names, tech terms)
-     *   that anchor the embedding to the right topic far better than the vague Q.
-     *
+     * The answer contains concrete entities (company names, system names, tech terms)
+     * that anchor the embedding to the right topic far better than the vague Q.
+     * <p>
      * Example:
-     *   history last A → "Insurance Portal System at Sinosig. Used Redis to cache credit checks..."
-     *   question       → "How did you reduce cost in that system?"
-     *   resolved       → "Insurance Portal System at Sinosig. Used Redis to cache credit checks...
-     *                     How did you reduce cost in that system?"
+     * history last A → "Insurance Portal System at Sinosig. Used Redis to cache credit checks..."
+     * question       → "How did you reduce cost in that system?"
+     * resolved       → "Insurance Portal System at Sinosig. Used Redis to cache credit checks...
+     * How did you reduce cost in that system?"
      */
     String resolveRetrievalQuery(String question, String history, String focusCompany) {
         if (history == null || history.isBlank()) return question;
@@ -428,7 +440,7 @@ public class ChatServiceImpl implements ChatService {
 
         // Extract last Q and A from history
         String lastQuestion = "";
-        String lastAnswer   = "";
+        String lastAnswer = "";
         for (String line : history.split("\n")) {
             String trimmed = line.trim();
             if (trimmed.startsWith("Q: ")) lastQuestion = trimmed.substring(3).strip();
@@ -473,7 +485,7 @@ public class ChatServiceImpl implements ChatService {
                 .getOrDefault(focusCompany, List.of());
         if (subgroups.isEmpty()) return queries;
         String original = queries.get(0);
-        String pattern  = "(?i)\\b" + java.util.regex.Pattern.quote(focusCompany) + "\\b";
+        String pattern = "(?i)\\b" + java.util.regex.Pattern.quote(focusCompany) + "\\b";
         List<String> expanded = new ArrayList<>(queries);
         for (String sub : subgroups) {
             String replaced = original.replaceAll(pattern, sub);
@@ -501,9 +513,11 @@ public class ChatServiceImpl implements ChatService {
         return allowed;
     }
 
-    /** Returns sibling sub-companies for a sub-project focusCompany.
-     *  Siblings are part of the same parent group and are ALLOWED in the post-filter.
-     *  e.g. focusCompany=OCBC → siblings=[Sanofi] (both are Deloitte sub-projects). */
+    /**
+     * Returns sibling sub-companies for a sub-project focusCompany.
+     * Siblings are part of the same parent group and are ALLOWED in the post-filter.
+     * e.g. focusCompany=OCBC → siblings=[Sanofi] (both are Deloitte sub-projects).
+     */
     List<String> getSiblingCompanies(String focusCompany) {
         if (focusCompany == null) return List.of();
         return ragProperties.getCompanySubgroups().values().stream()
@@ -521,7 +535,11 @@ public class ChatServiceImpl implements ChatService {
             if (lastClaudeCall.compareAndSet(prev, next)) {
                 long waitMs = next - now;
                 if (waitMs > 0) {
-                    try { Thread.sleep(waitMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    try {
+                        Thread.sleep(waitMs);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
                 return;
             }
@@ -544,7 +562,8 @@ public class ChatServiceImpl implements ChatService {
                     Long docId = null;
                     try {
                         if (h.docId() != null) docId = Long.parseLong(h.docId());
-                    } catch (NumberFormatException ignored) {}
+                    } catch (NumberFormatException ignored) {
+                    }
                     return Vos.SourceChunk.builder()
                             .documentId(docId)
                             .fileName(h.fileName())

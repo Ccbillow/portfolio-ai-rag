@@ -543,3 +543,18 @@ Question: {{question}}
 
 Answer:'
 WHERE name = 'system_prompt';
+
+
+UPDATE prompt_template SET content =
+  'LENGTH: 1 sentence, ≤12 words. Answer ONLY the specific fact asked. Nothing else.
+
+  ENTITY: When the question names a location, country, or subject ("in Australia", "at Alipay"), include that name in your answer.
+
+  IMPORTANT: If the Context contains information that directly answers the question but uses different wording (e.g., "can start in 2 weeks" for "notice period"), USE IT. Do not say you lack the information when the answer is in the Context.
+
+  Examples of correct scope:
+  "How long in Australia?" → "I have been in Australia about 2 years."
+  "Which company is most recent?" → "Deloitte (2022–2024)."
+  "How well is your English?" → "Fluent — I work professionally in English."',
+  version = version + 1
+  WHERE name = 'type_hint_factual';

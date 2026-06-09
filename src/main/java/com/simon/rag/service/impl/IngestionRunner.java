@@ -154,27 +154,31 @@ public class IngestionRunner {
                 log.info("Contextual Retrieval: generating context prefixes for {} chunks (concurrency={})",
                         segments.size(), crCfg.getConcurrency());
                 long crStart = System.currentTimeMillis();
+                // Acquire semaphore BEFORE submitting to executor so pool threads
+                // never block waiting for a permit (same pattern as ChunkMetadataEnricher).
                 Semaphore semaphore = new Semaphore(crCfg.getConcurrency());
-                List<CompletableFuture<String>> futures = segments.stream()
-                        .map(seg -> CompletableFuture.supplyAsync(() -> {
+                List<CompletableFuture<String>> futures = new ArrayList<>();
+                for (TextSegment seg : segments) {
+                    try {
+                        semaphore.acquire();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    CompletableFuture<String> f = CompletableFuture.supplyAsync(() -> {
+                        try {
                             if ("document_summary".equals(seg.metadata().getString("chunkType"))) {
                                 return seg.text();
                             }
-                            try {
-                                semaphore.acquire();
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                return seg.text();
-                            }
-                            try {
-                                throttleCrCall(crCfg.getRateLimitMs());
-                                String prefix = generateContextPrefix(docContext, seg.text());
-                                return prefix.isBlank() ? seg.text() : prefix + "\n\n" + seg.text();
-                            } finally {
-                                semaphore.release();
-                            }
-                        }, uploadExecutor))
-                        .toList();
+                            throttleCrCall(crCfg.getRateLimitMs());
+                            String prefix = generateContextPrefix(docContext, seg.text());
+                            return prefix.isBlank() ? seg.text() : prefix + "\n\n" + seg.text();
+                        } finally {
+                            semaphore.release();
+                        }
+                    }, uploadExecutor);
+                    futures.add(f);
+                }
                 futures.forEach(f -> embeddingTexts.add(f.join()));
                 log.info("Contextual Retrieval: done in {}ms", System.currentTimeMillis() - crStart);
             } else {
