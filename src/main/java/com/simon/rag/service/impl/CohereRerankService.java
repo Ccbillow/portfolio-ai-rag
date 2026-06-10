@@ -51,10 +51,22 @@ public class CohereRerankService {
     }
 
     /**
-     * Reranks candidates using Cohere and returns top-N in relevance order.
-     * Falls back to original order (limited to topN) if API is unavailable.
+     * Standard rerank — applies minRerankScore cutoff.
+     * Use for BEHAVIORAL / TECHNICAL questions.
      */
     public List<RerankedHit> rerank(String query, List<SearchHit> candidates) {
+        return doRerank(query, candidates, ragProperties.getReranker().getMinRerankScore());
+    }
+
+    /**
+     * Rerank without minScore cutoff — always returns exactly topN.
+     * Use for FACTUAL_EXPERIENCE questions where aggressive cutoff drops valid chunks.
+     */
+    public List<RerankedHit> rerankTopN(String query, List<SearchHit> candidates) {
+        return doRerank(query, candidates, 0.0);
+    }
+
+    private List<RerankedHit> doRerank(String query, List<SearchHit> candidates, double minScore) {
         RagProperties.Reranker cfg = ragProperties.getReranker();
 
         if (!cfg.isEnabled() || !hasKey || candidates.isEmpty() || candidates.size() <= 2) {
@@ -63,16 +75,11 @@ public class CohereRerankService {
                     .collect(Collectors.toList());
         }
 
-
-        List<String> documents = candidates.stream()
-                .map(SearchHit::text)
-                .collect(Collectors.toList());
+        List<String> documents = candidates.stream().map(SearchHit::text).collect(Collectors.toList());
 
         try {
             throttle(cfg.getRateLimitMs());
-
-            RerankRequest request = new RerankRequest(
-                    cfg.getModel(), query, documents, cfg.getTopN(), false);
+            RerankRequest request = new RerankRequest(cfg.getModel(), query, documents, cfg.getTopN(), false);
 
             RerankResponse response = webClient.post()
                     .uri("/v2/rerank")
@@ -88,9 +95,7 @@ public class CohereRerankService {
                         .collect(Collectors.toList());
             }
 
-            double minScore = cfg.getMinRerankScore();
             List<RerankResult> results = response.results();
-
             List<RerankResult> kept = results.stream()
                     .filter(r -> r.relevanceScore() >= minScore)
                     .collect(Collectors.toList());
@@ -101,11 +106,9 @@ public class CohereRerankService {
                     .map(r -> new RerankedHit(candidates.get(r.index()), r.relevanceScore()))
                     .collect(Collectors.toList());
 
-            log.info("Reranked {}/{} candidates → kept {}/{} (minScore={}): scores {}",
-                    candidates.size(), documents.size(),
-                    kept.size(), results.size(), minScore,
-                    results.stream()
-                            .map(r -> String.format("%.3f", r.relevanceScore()))
+            log.info("Reranked {}/{} → kept {}/{} (minScore={}): scores {}",
+                    candidates.size(), documents.size(), kept.size(), results.size(), minScore,
+                    results.stream().map(r -> String.format("%.3f", r.relevanceScore()))
                             .collect(Collectors.joining(", ")));
 
             return reranked;

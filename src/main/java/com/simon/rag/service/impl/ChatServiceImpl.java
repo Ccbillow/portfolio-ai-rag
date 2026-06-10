@@ -90,6 +90,19 @@ public class ChatServiceImpl implements ChatService {
 
     /**
      * Pre-LLM retrieval pipeline shared by ask(), askStream(), and EvalChatServiceImpl.
+     *
+     * Question
+     *   → Agent gate (INVALID/OUT_OF_SCOPE → early return)
+     *   → Query prep (history, focusCompany, queries, siblings)
+     *   → selectStrategy()
+     *       ├─ isMultiCompany?          → MULTI_COMPANY   (per-company retrieval, no rerank)
+     *       ├─ BEHAVIORAL / TECHNICAL   → BEHAVIORAL       (intent + hybrid + rerank w/ minScore)
+     *       ├─ FACTUAL + temporal?      → FACTUAL_TEMPORAL (retrieval only, no rerank)
+     *       ├─ FACTUAL + profile?       → FACTUAL_PROFILE  (retrieval only, no rerank)
+     *       └─ FACTUAL + experience?    → FACTUAL_EXPERIENCE (retrieval + rerankTopN, no minScore)
+     *   → strategy.execute(ctx) → List<RerankedHit>
+     *   → context assembly + coverage log
+     *   → RetrievalResult
      */
     RetrievalResult retrieve(String question, String sessionId) {
 
@@ -98,55 +111,39 @@ public class ChatServiceImpl implements ChatService {
         String earlyReturn = questionClassifier.earlyReturnMessage(type, question);
         if (earlyReturn != null) {
             log.info("Agent gate early return: type={}", type);
-            return new RetrievalResult(type, earlyReturn, null, null, null, null, null, null, 0, 0);
+            return new RetrievalResult(type, earlyReturn, null, null,
+                    null, null, null, null, 0, 0);
         }
 
         // 2. Query Preparation
         RagProperties.Embedding cfg = ragProperties.getEmbedding();
         String history        = redisCacheService.getConversationHistory(sessionId);
         String focusCompany   = promptBuilder.extractFocusCompany(question, history);
-        boolean multiCompanyQuestion = isMultiCompanyQuestion(question, focusCompany);
         String retrievalQuery = resolveRetrievalQuery(question, history, focusCompany);
         List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
         List<String> siblings = getSiblingCompanies(focusCompany);
 
-        // 3. Intent classification + retrieval
-        List<IntentTag> intentTags;
-        if (type == QuestionType.FACTUAL) {
-            intentTags = List.of();
-            log.info("[Chat] FACTUAL question detected, skipping intent classification. q='{}'", question);
-        } else {
-            intentTags = queryIntentClassifier.classify(question);
-            log.info("[Chat] sessionId={} intentTags={} question={}", sessionId, intentTags, question);
-        }
+        // 3. Strategy Selection + Execution
+        RetrievalContext ctx = new RetrievalContext(type, question, retrievalQuery, queries, focusCompany, siblings, cfg);
+        NamedStrategy strategy = selectStrategy(ctx);
+
         long t0 = System.currentTimeMillis();
-        List<SearchHit> candidates = multiCompanyQuestion
-                ? retrieveCandidatesPerCompany(queries.get(0), cfg, intentTags)
-                : retrieveCandidates(queries, cfg, focusCompany, siblings, intentTags);
+        List<RerankedHit> hits = strategy.execute(ctx);
         long t1 = System.currentTimeMillis();
 
-        // 4. Cohere rerank → company allowlist filter
-        List<RerankedHit> ranked = type != QuestionType.FACTUAL
-                ? cohereRerankService.rerank(retrievalQuery, candidates)
-                : candidates.stream().map(h -> new RerankedHit(h, h.score())).toList();
-        List<RerankedHit> hits = applyCompanyFilter(ranked, focusCompany, siblings);
-        if (multiCompanyQuestion) {
-            hits = enforceCompanyDiversity(hits, candidates);
-        }
-        long t2 = System.currentTimeMillis();
-
-        // 5. Context assembly + coverage log
-        String context = hits.stream().map(rh -> rh.hit().text())
+        // 4. Context Assembly + Coverage Log
+        String context = hits.stream()
+                .map(rh -> rh.hit().text())
                 .collect(Collectors.joining("\n\n---\n\n"));
         Set<String> contextCompanies = hits.stream()
                 .flatMap(rh -> rh.hit().companies().stream())
                 .collect(Collectors.toSet());
-        log.info("[Chat] context_companies={} focusCompany={} hits={} q='{}'",
-                contextCompanies, focusCompany, hits.size(),
+        log.info("[Chat] strategy={} context_companies={} focusCompany={} hits={} q='{}'",
+                strategy.name(), contextCompanies, focusCompany, hits.size(),
                 question.length() > 80 ? question.substring(0, 80) + "…" : question);
 
-        return new RetrievalResult(type, null, history, candidates, ranked, hits, context, focusCompany,
-                t1 - t0, t2 - t1);
+        return new RetrievalResult(type, null, history, null,
+                null, hits, context, focusCompany, t1 - t0, 0);
     }
 
     // ----------------------------------------------------------------
@@ -592,6 +589,139 @@ public class ChatServiceImpl implements ChatService {
                 || (lower.contains("rate") && lower.contains("limit"));
     }
 
+    private static final List<String> TEMPORAL_SIGNALS = List.of(
+            "how long", "how many years", "how many months", "when did you join",
+            "when did you leave", "when did you start", "start date", "end date",
+            "tenure", "employment period", "work period", "duration"
+    );
+
+    private static final List<String> PROFILE_SIGNALS = List.of(
+            "notice period", "visa", "work rights", "nationality", "where are you from",
+            "how long in australia", "relocation", "contact preference", "salary",
+            "compensation", "package", "current situation"
+    );
+
+    private boolean isTemporalQuestion(String question) {
+        String lower = question.toLowerCase();
+        return TEMPORAL_SIGNALS.stream().anyMatch(lower::contains);
+    }
+
+    private boolean isProfileQuestion(String question) {
+        String lower = question.toLowerCase();
+        return PROFILE_SIGNALS.stream().anyMatch(lower::contains);
+    }
+
+    // ----------------------------------------------------------------
+    //  Retrieval Strategy Pattern
+    // ----------------------------------------------------------------
+
+    /**
+     * Immutable context passed to every retrieval strategy.
+     * Built once in retrieve() and shared across strategy selection and execution.
+     */
+    private record RetrievalContext(
+            QuestionType questionType,
+            String question,
+            String retrievalQuery,
+            List<String> queries,
+            String focusCompany,
+            List<String> siblings,
+            RagProperties.Embedding embeddingCfg
+    ) {}
+
+    /**
+     * Named strategy wrapper — holds the strategy name for logging and a
+     * function reference to the actual execute method.
+     * Using a record keeps it immutable and avoids anonymous class boilerplate.
+     */
+    private record NamedStrategy(
+            String name,
+            java.util.function.Function<RetrievalContext, List<RerankedHit>> fn
+    ) {
+        List<RerankedHit> execute(RetrievalContext ctx) {
+            return fn.apply(ctx);
+        }
+    }
+
+    /**
+     * Factory: selects the appropriate retrieval strategy based on question
+     * type and content. Multi-company detection takes priority over QuestionType.
+     */
+    private NamedStrategy selectStrategy(RetrievalContext ctx) {
+        if (isMultiCompanyQuestion(ctx.question(), ctx.focusCompany()))
+            return new NamedStrategy("MULTI_COMPANY",   this::executeMultiCompany);
+
+        return switch (ctx.questionType()) {
+            case BEHAVIORAL, TECHNICAL, STRATEGIC ->
+                    new NamedStrategy("BEHAVIORAL",          this::executeBehavioral);
+            case FACTUAL ->
+                    selectFactualStrategy(ctx.question());
+            default ->
+                    new NamedStrategy("BEHAVIORAL",          this::executeBehavioral);
+        };
+    }
+
+    private NamedStrategy selectFactualStrategy(String question) {
+        if (isTemporalQuestion(question))
+            return new NamedStrategy("FACTUAL_TEMPORAL",  this::executeFactualNoRerank);
+        if (isProfileQuestion(question))
+            return new NamedStrategy("FACTUAL_PROFILE",   this::executeFactualNoRerank);
+        return     new NamedStrategy("FACTUAL_EXPERIENCE", this::executeFactualExperience);
+    }
+
+    /**
+     * BEHAVIORAL / TECHNICAL / STRATEGIC
+     * Intent classification → hybrid retrieval → Cohere rerank (with minScore cutoff)
+     */
+    private List<RerankedHit> executeBehavioral(RetrievalContext ctx) {
+        List<IntentTag> intents = queryIntentClassifier.classify(ctx.question());
+        log.info("[Strategy] BEHAVIORAL intents={}", intents);
+        List<SearchHit> candidates = retrieveCandidates(
+                ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), intents);
+        List<RerankedHit> ranked = cohereRerankService.rerank(ctx.retrievalQuery(), candidates);
+        return applyCompanyFilter(ranked, ctx.focusCompany(), ctx.siblings());
+    }
+
+    /**
+     * FACTUAL_EXPERIENCE — "What was your role at OCBC", "What tech stack did you use at Alipay"
+     * Retrieval + rerank but NO minScore cutoff (factual chunks score lower but are still correct).
+     */
+    private List<RerankedHit> executeFactualExperience(RetrievalContext ctx) {
+        List<SearchHit> candidates = retrieveCandidates(
+                ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), List.of());
+        List<RerankedHit> ranked = cohereRerankService.rerankTopN(ctx.retrievalQuery(), candidates);
+        return applyCompanyFilter(ranked, ctx.focusCompany(), ctx.siblings());
+    }
+
+    /**
+     * FACTUAL_TEMPORAL ("how long did you work at X") and FACTUAL_PROFILE (visa, notice period)
+     * No rerank — BM25 keyword matching on timeline/profile chunks is more reliable than
+     * Cohere's cross-encoder for factual date/logistics content.
+     */
+    private List<RerankedHit> executeFactualNoRerank(RetrievalContext ctx) {
+        List<SearchHit> candidates = retrieveCandidates(
+                ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), List.of());
+        return candidates.stream()
+                .map(h -> new RerankedHit(h, h.score()))
+                .limit(ragProperties.getReranker().getTopN())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * MULTI_COMPANY — "past few jobs", "career highlights", "key contribution across companies"
+     * Per-company retrieval guarantees each company is represented in the candidate pool.
+     * No global rerank — cross-company reranking biases toward the company with
+     * the richest vocabulary match. Diversity enforced by construction.
+     */
+    private List<RerankedHit> executeMultiCompany(RetrievalContext ctx) {
+        List<SearchHit> candidates = retrieveCandidatesPerCompany(
+                ctx.queries().get(0), ctx.embeddingCfg(), List.of());
+        List<RerankedHit> hits = candidates.stream()
+                .map(h -> new RerankedHit(h, h.score()))
+                .collect(Collectors.toList());
+        return enforceCompanyDiversity(hits, candidates);
+    }
+
     private List<Vos.SourceChunk> toSources(List<RerankedHit> hits) {
         return hits.stream()
                 .map(rh -> {
@@ -615,8 +745,8 @@ public class ChatServiceImpl implements ChatService {
     }
 
     // ----------------------------------------------------------------
-//  Multi-company diversity (Fix 2)
-// ----------------------------------------------------------------
+    //  Multi-company diversity
+    // ----------------------------------------------------------------
 
     private static final List<String> MULTI_COMPANY_SIGNALS = List.of(
             "past few jobs", "past jobs", "each company", "all companies",
