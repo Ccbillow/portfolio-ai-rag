@@ -93,7 +93,7 @@ public class ChatServiceImpl implements ChatService {
      */
     RetrievalResult retrieve(String question, String sessionId) {
 
-        // 1. Agent gate — rule-based classify, short-circuit INVALID/OUT_OF_SCOPE
+        // 1. Agent Gate
         QuestionType type = questionClassifier.classify(question);
         String earlyReturn = questionClassifier.earlyReturnMessage(type, question);
         if (earlyReturn != null) {
@@ -101,15 +101,16 @@ public class ChatServiceImpl implements ChatService {
             return new RetrievalResult(type, earlyReturn, null, null, null, null, null, null, 0, 0);
         }
 
-        // 2. Query preparation — history, focus company, query expansion, sub-project queries
+        // 2. Query Preparation
         RagProperties.Embedding cfg = ragProperties.getEmbedding();
         String history        = redisCacheService.getConversationHistory(sessionId);
         String focusCompany   = promptBuilder.extractFocusCompany(question, history);
+        boolean multiCompanyQuestion = isMultiCompanyQuestion(question, focusCompany);
         String retrievalQuery = resolveRetrievalQuery(question, history, focusCompany);
         List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
         List<String> siblings = getSiblingCompanies(focusCompany);
 
-        // 3. Phase 12: classify intent on original question, then hybrid retrieval
+        // 3. Intent classification + retrieval
         List<IntentTag> intentTags;
         if (type == QuestionType.FACTUAL) {
             intentTags = List.of();
@@ -119,10 +120,9 @@ public class ChatServiceImpl implements ChatService {
             log.info("[Chat] sessionId={} intentTags={} question={}", sessionId, intentTags, question);
         }
         long t0 = System.currentTimeMillis();
-        List<SearchHit> candidates = retrieveCandidates(queries, cfg, focusCompany, siblings, intentTags);
-        log.info("[Chat] sessionId={} intentTags={} question={}",
-                sessionId, intentTags,
-                question.length() > 80 ? question.substring(0, 80) + "…" : question);
+        List<SearchHit> candidates = multiCompanyQuestion
+                ? retrieveCandidatesPerCompany(queries.get(0), cfg, intentTags)
+                : retrieveCandidates(queries, cfg, focusCompany, siblings, intentTags);
         long t1 = System.currentTimeMillis();
 
         // 4. Cohere rerank → company allowlist filter
@@ -130,11 +130,21 @@ public class ChatServiceImpl implements ChatService {
                 ? cohereRerankService.rerank(retrievalQuery, candidates)
                 : candidates.stream().map(h -> new RerankedHit(h, h.score())).toList();
         List<RerankedHit> hits = applyCompanyFilter(ranked, focusCompany, siblings);
+        if (multiCompanyQuestion) {
+            hits = enforceCompanyDiversity(hits, candidates);
+        }
         long t2 = System.currentTimeMillis();
 
-        // 5. Join chunk texts into LLM context
+        // 5. Context assembly + coverage log
         String context = hits.stream().map(rh -> rh.hit().text())
                 .collect(Collectors.joining("\n\n---\n\n"));
+        Set<String> contextCompanies = hits.stream()
+                .flatMap(rh -> rh.hit().companies().stream())
+                .collect(Collectors.toSet());
+        log.info("[Chat] context_companies={} focusCompany={} hits={} q='{}'",
+                contextCompanies, focusCompany, hits.size(),
+                question.length() > 80 ? question.substring(0, 80) + "…" : question);
+
         return new RetrievalResult(type, null, history, candidates, ranked, hits, context, focusCompany,
                 t1 - t0, t2 - t1);
     }
@@ -376,6 +386,33 @@ public class ChatServiceImpl implements ChatService {
     }
 
     /**
+     * For multi-company questions: run one targeted search per known company
+     * (2 chunks each) instead of a single global search.
+     * Guarantees every company is represented in the candidate pool going into rerank.
+     */
+    private List<SearchHit> retrieveCandidatesPerCompany(String primaryQuery,
+                                                         RagProperties.Embedding cfg,
+                                                         List<IntentTag> intentTags) {
+        LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
+        int perCompanyLimit = 2;
+
+        for (String company : ragProperties.getCompanies()) {
+            float[] dense = embedQuestion(primaryQuery);
+            SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(primaryQuery);
+
+            List<SearchHit> companyHits = (!sparse.isEmpty() && ragProperties.getHybridSearch().isEnabled())
+                    ? qdrantSearchService.hybridSearchWithIntentFilter(dense, sparse, perCompanyLimit, company, intentTags)
+                    : qdrantSearchService.search(dense, perCompanyLimit, cfg.getMinScore(), company);
+
+            companyHits.forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
+        }
+
+        log.info("[MultiCompany] Per-company retrieval: {} candidates across {} companies",
+                seen.size(), ragProperties.getCompanies().size());
+        return new ArrayList<>(seen.values());
+    }
+
+    /**
      * Company-scoped post-filter on reranked hits.
      * Package-private for EvalChatServiceImpl reuse.
      */
@@ -575,5 +612,70 @@ public class ChatServiceImpl implements ChatService {
                             .build();
                 })
                 .collect(Collectors.toList());
+    }
+
+    // ----------------------------------------------------------------
+//  Multi-company diversity (Fix 2)
+// ----------------------------------------------------------------
+
+    private static final List<String> MULTI_COMPANY_SIGNALS = List.of(
+            "past few jobs", "past jobs", "each company", "all companies",
+            "throughout your career", "across your career", "all your experience",
+            "different companies", "career highlight", "career journey",
+            "walk me through your career", "every company", "all roles"
+    );
+
+    /**
+     * Returns true when the question spans the full career (no specific company in focus).
+     * Only fires when focusCompany is null — if a company is detected, normal scoped
+     * retrieval is already correct.
+     */
+    private boolean isMultiCompanyQuestion(String question, String focusCompany) {
+        if (focusCompany != null) return false;
+        String lower = question.toLowerCase();
+        return MULTI_COMPANY_SIGNALS.stream().anyMatch(lower::contains);
+    }
+
+    /**
+     * Ensures each known company has at least one chunk in the final context.
+     * Iterates allCandidates (full reranked list before company filter) and appends
+     * the best-scored chunk for any company not yet represented in hits.
+     */
+    private List<RerankedHit> enforceCompanyDiversity(List<RerankedHit> hits,
+                                                      List<SearchHit> allCandidates) {
+        Set<String> covered = hits.stream()
+                .flatMap(rh -> rh.hit().companies().stream())
+                .map(String::toLowerCase)
+                .collect(Collectors.toSet());
+
+        Set<String> missing = ragProperties.getCompanies().stream()
+                .map(String::toLowerCase)
+                .filter(c -> !covered.contains(c))
+                .collect(Collectors.toSet());
+
+        if (missing.isEmpty()) {
+            log.debug("[Diversity] All companies covered: {}", covered);
+            return hits;
+        }
+
+        List<RerankedHit> result = new ArrayList<>(hits);
+
+        for (String missingCompany : missing) {
+            allCandidates.stream()
+                    .filter(h -> h.companies().stream()
+                            .anyMatch(c -> c.equalsIgnoreCase(missingCompany)))
+                    .filter(h -> result.stream().noneMatch(existing ->
+                            existing.hit().docId().equals(h.docId()) &&
+                                    existing.hit().chunkIndex() == h.chunkIndex()))
+                    .findFirst()
+                    .ifPresent(h -> {
+                        result.add(new RerankedHit(h, h.score()));  // ← 包装成 RerankedHit
+                        log.info("[Diversity] Added '{}' chunk from raw candidates (score={})",
+                                missingCompany, h.score());
+                    });
+        }
+
+        log.info("[Diversity] hits {} → {} | missing was: {}", hits.size(), result.size(), missing);
+        return result;
     }
 }
