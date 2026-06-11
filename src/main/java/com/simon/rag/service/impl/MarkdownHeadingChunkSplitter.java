@@ -1,9 +1,8 @@
 package com.simon.rag.service.impl;
 
-import dev.langchain4j.data.document.Document;
-import dev.langchain4j.data.document.DocumentSplitter;
-import dev.langchain4j.data.document.splitter.DocumentBySentenceSplitter;
 import dev.langchain4j.data.segment.TextSegment;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -13,6 +12,7 @@ import java.util.regex.Pattern;
 
 @Component
 public class MarkdownHeadingChunkSplitter {
+    private static final Logger log = LoggerFactory.getLogger(MarkdownHeadingChunkSplitter.class);
 
     private static final Pattern H2_PATTERN = Pattern.compile("(?m)^(## .+)$");
 
@@ -54,32 +54,47 @@ public class MarkdownHeadingChunkSplitter {
         return result;
     }
 
-    private void flush(List<TextSegment> result,
-                       String heading,
-                       String body,
-                       String docHeading) {
-        String text = heading.isBlank()
+    private void flush(List<TextSegment> result, String heading, String body, String docHeading) {
+        String raw = heading.isBlank()
                 ? body.strip()
                 : heading + "\n\n" + body.strip();
 
-        if (text.isBlank()) return;
+        if (raw.isBlank()) return;
 
-        if (text.length() <= maxChunkSize) {
-            TextSegment segment = TextSegment.from(text,
-                    dev.langchain4j.data.document.Metadata.from("heading", heading)
-                            .put("doc_heading", docHeading));
-            result.add(segment);
-        } else {
-            DocumentSplitter sentenceSplitter = new DocumentBySentenceSplitter(
-                    maxChunkSize, chunkOverlap);
-            Document doc = Document.from(text);
-            List<TextSegment> subChunks = sentenceSplitter.split(doc);
-            subChunks.forEach(sc ->
-                    result.add(TextSegment.from(sc.text(),
-                            sc.metadata()
-                              .put("heading", heading)
-                              .put("doc_heading", docHeading))));
+        String text = cleanMarkdown(raw);
+
+        if (text.length() > maxChunkSize) {
+            log.warn("[Splitter] Oversized chunk ({} chars > limit {}): '{}' — " +
+                            "split '###' into two sections in the source file.",
+                    text.length(), maxChunkSize,
+                    heading.length() > 70 ? heading.substring(0, 70) + "…" : heading);
         }
+
+        result.add(TextSegment.from(text,
+                dev.langchain4j.data.document.Metadata.from("heading", heading)
+                        .put("doc_heading", docHeading)));
+    }
+
+    /**
+     * Strips markdown formatting noise while preserving semantic structure.
+     * Removes: bold/italic markers, blockquote prefixes, horizontal rules,
+     *          leading indent spaces, excessive blank lines.
+     * Keeps: bullet markers, numbered lists, code spans, line breaks.
+     */
+    private static String cleanMarkdown(String text) {
+        return text
+                // **bold** → bold,  *italic* → italic
+                .replaceAll("\\*\\*(.+?)\\*\\*", "$1")
+                .replaceAll("\\*(?!\\s)(.+?)(?<!\\s)\\*", "$1")
+                // > blockquote prefix
+                .replaceAll("(?m)^>\\s*", "")
+                // --- horizontal rule (whole line)
+                .replaceAll("(?m)^-{3,}\\s*$", "")
+                // leading spaces / tabs per line (de-indent)
+                .replaceAll("(?m)^[ \\t]+", "")
+                // collapse 3+ blank lines → single blank line
+                .replaceAll("\n{3,}", "\n\n")
+                .strip();
     }
 
     private String extractDocHeading(String rawText) {

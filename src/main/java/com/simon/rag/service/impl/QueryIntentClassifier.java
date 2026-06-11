@@ -103,10 +103,16 @@ public class QueryIntentClassifier {
               → ["delivery","ambiguity"]
             "Walk me through the most complex system you've built"
               → ["architecture","technical_depth"]
-            "Tell me about a time you made a serious mistake"    
+            "Tell me about a time you made a serious mistake"
               → ["production_issue"]
-            "What would you do differently in that project?"     
+            "What would you do differently in that project?"
               → ["production_issue", "growth"]
+            "Which one taught you the most?"
+              → ["growth"]
+            "What's the biggest lesson you've learned?"
+              → ["growth"]
+            "Tell me about mentoring someone"
+              → ["leadership"]
             """;
 
     private final ChatLanguageModel chatLanguageModel;

@@ -38,7 +38,7 @@ public class ChunkMetadataEnricher {
           technical_depth   — algorithms, performance optimization, deep implementation
           ambiguity         — unclear requirements, limited resources, high uncertainty
           conflict          — disagreements, pushback, stakeholder tension
-          growth            — learning new domains, career transitions, mentoring others
+          growth            — reflection, lessons learned, mindset change, personal growth, career development, learning new domains, mentoring others
 
         behavioral_tags (pick 1-4, what soft skills are demonstrated) - MUST be chosen ONLY from behavioral_tags list, no other values allowed:
           ownership, cross_team_communication, mentoring, data_driven,
@@ -83,6 +83,9 @@ public class ChunkMetadataEnricher {
     @Value("${rag.metadata-enrichment.concurrency:3}")
     private int concurrency;
 
+    @Value("${rag.metadata-enrichment.rate-limit-ms:1500}")
+    private long rateLimitMs;
+
     public ChunkMetadataEnricher(ChatLanguageModel chatLanguageModel,
                                   ObjectMapper objectMapper,
                                   @Qualifier("uploadExecutor") Executor executor) {
@@ -105,6 +108,8 @@ public class ChunkMetadataEnricher {
         for (TextSegment segment : segments) {
             try {
                 semaphore.acquire();
+                // Throttle submissions to stay under Anthropic rate limit (50 RPM for Haiku)
+                Thread.sleep(rateLimitMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;

@@ -80,7 +80,8 @@ rag:
     rate-limit-ms: 6000
   metadata-enrichment:
     enabled: true
-    concurrency: 3
+    concurrency: 2
+    rate-limit-ms: 1500
   intent-classifier:
     llm-fallback: true
   raptor:
