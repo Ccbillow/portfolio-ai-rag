@@ -16,8 +16,11 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import jakarta.annotation.PostConstruct;
+
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class ChunkMetadataEnricher {
@@ -86,6 +89,17 @@ public class ChunkMetadataEnricher {
     @Value("${rag.metadata-enrichment.rate-limit-ms:1500}")
     private long rateLimitMs;
 
+    /** Global rate limiter — shared across all concurrent enrichAll() calls. */
+    private static final AtomicLong LAST_SUBMIT_MS = new AtomicLong(0);
+
+    /** Shared semaphore to cap total concurrent API calls across all files. */
+    private Semaphore globalSemaphore;
+
+    @PostConstruct
+    void init() {
+        this.globalSemaphore = new Semaphore(concurrency);
+    }
+
     public ChunkMetadataEnricher(ChatLanguageModel chatLanguageModel,
                                   ObjectMapper objectMapper,
                                   @Qualifier("uploadExecutor") Executor executor) {
@@ -100,25 +114,28 @@ public class ChunkMetadataEnricher {
             return segments.stream().map(s -> EnrichmentResult.empty()).toList();
         }
 
-        // Submit tasks with external semaphore gating — only concurrency-many tasks
-        // ever enter the executor, so pool threads never block waiting for a permit.
-        Semaphore semaphore = new Semaphore(concurrency);
         List<CompletableFuture<EnrichmentResult>> futures = new ArrayList<>();
 
         for (TextSegment segment : segments) {
             try {
-                semaphore.acquire();
-                // Throttle submissions to stay under Anthropic rate limit (50 RPM for Haiku)
-                Thread.sleep(rateLimitMs);
+                globalSemaphore.acquire();
+                // Global throttle: ensure minimum spacing between any two API calls
+                long now = System.currentTimeMillis();
+                long prev = LAST_SUBMIT_MS.getAndSet(now);
+                long elapsed = now - prev;
+                if (elapsed < rateLimitMs && prev > 0) {
+                    Thread.sleep(rateLimitMs - elapsed);
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                globalSemaphore.release();
                 break;
             }
             CompletableFuture<EnrichmentResult> future = CompletableFuture.supplyAsync(() -> {
                 try {
                     return enrich(segment.text());
                 } finally {
-                    semaphore.release();
+                    globalSemaphore.release();
                 }
             }, executor);
             futures.add(future);

@@ -138,8 +138,8 @@ public class ChatServiceImpl implements ChatService {
         Set<String> contextCompanies = hits.stream()
                 .flatMap(rh -> rh.hit().companies().stream())
                 .collect(Collectors.toSet());
-        log.info("[Chat] strategy={} context_companies={} focusCompany={} hits={} q='{}'",
-                strategy.name(), contextCompanies, focusCompany, hits.size(),
+        log.info("[Chat] questionType={} strategy={} context_companies={} focusCompany={} hits={} q='{}'",
+                type, strategy.name(), contextCompanies, focusCompany, hits.size(),
                 question.length() > 80 ? question.substring(0, 80) + "…" : question);
 
         return new RetrievalResult(type, null, history, null,
