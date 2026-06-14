@@ -15,6 +15,21 @@ public final class ChecksRunner {
 
     private ChecksRunner() {}
 
+    /**
+     * Token may contain {@code |}-separated alternatives (OR logic).
+     * {@code "legacy | unclear | complex"} matches if any one alternative
+     * appears in the answer. Plain tokens match as before (single AND).
+     */
+    private static boolean matchesOr(String token, String lowerAnswer) {
+        if (token.contains("|")) {
+            for (String alt : token.split("\\|")) {
+                if (lowerAnswer.contains(alt.strip().toLowerCase())) return true;
+            }
+            return false;
+        }
+        return lowerAnswer.contains(token.toLowerCase());
+    }
+
     public record ChecksResult(
             List<String> mustContainMissing,
             List<String> mustNotContainHit,
@@ -30,14 +45,14 @@ public final class ChecksRunner {
         List<String> mcMissing = new ArrayList<>();
         if (aCase.mustContain() != null) {
             for (String token : aCase.mustContain()) {
-                if (!lower.contains(token.toLowerCase())) mcMissing.add(token.toLowerCase());
+                if (!matchesOr(token, lower)) mcMissing.add(token.toLowerCase());
             }
         }
 
         List<String> mncHit = new ArrayList<>();
         if (aCase.mustNotContain() != null) {
             for (String token : aCase.mustNotContain()) {
-                if (lower.contains(token.toLowerCase())) mncHit.add(token.toLowerCase());
+                if (matchesOr(token, lower)) mncHit.add(token.toLowerCase());
             }
         }
 

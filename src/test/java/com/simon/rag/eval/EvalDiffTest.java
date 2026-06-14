@@ -17,6 +17,15 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
+/**
+ * latest.json ── Compare ──→ candidates.json ──→ DiffEngine.classify()
+ * baseline.json 	        │
+ * 				            ├── severity=5: PASS→FAIL / New must_not_contain violation
+ * 				            ├── severity=4: New must_contain missing
+ * 				            ├── severity=3: Chunk address changed + answer also changed
+ * 				            ├── severity=2: Word count drift >30%
+ * 				            └── severity=1: Significant word choice difference (Jaccard <0.6)
+ */
 @Tag("eval-diff")
 class EvalDiffTest {
 
