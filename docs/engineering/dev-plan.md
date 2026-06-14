@@ -116,14 +116,22 @@ Evolved chunking from naive fixed-size -> simple text splitting -> retrieval-ori
 
 ---
 
-## 🔜 Phase 13 — Observability
+## ✅ Phase 13 — Retrieval Optimization (Multi-Company Coverage)
+
+- Multi-Company Coverage: type_hint_multi_company_summary/type_hint_multi_company_behavioral
+
+- Prompt Mode Resolution: Derived answer format from existing QuestionType + retrieval strategy
+
+---
+
+## 🔜 Phase 14 — Observability
 
 - Structured JSON logging: `sessionId`, `questionType`, `focusCompany`, `numHits`, `rerankScores`, `latencyMs`
 - Prometheus + Grafana: retrieval hit rate, rerank score distribution, LLM latency p50/p95; add containers to existing Docker Compose
 
 ---
 
-## 🔜 Phase 14 — Admin Dashboard
+## 🔜 Phase 15 — Admin Dashboard
 
 Knowledge Base
 - Document list: upload, status (pending/processing/failed/completed), retry on failure

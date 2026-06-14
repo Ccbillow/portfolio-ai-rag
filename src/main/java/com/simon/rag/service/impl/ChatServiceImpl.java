@@ -77,7 +77,8 @@ public class ChatServiceImpl implements ChatService {
             String context,
             String focusCompany,
             long retrieveMs,
-            long rerankMs
+            long rerankMs,
+            String strategyName
     ) {
         boolean hasEarlyReturn() {
             return earlyReturn != null;
@@ -112,7 +113,7 @@ public class ChatServiceImpl implements ChatService {
         if (earlyReturn != null) {
             log.info("Agent gate early return: type={}", type);
             return new RetrievalResult(type, earlyReturn, null, null,
-                    null, null, null, null, 0, 0);
+                    null, null, null, null, 0, 0, null);
         }
 
         // 2. Query Preparation
@@ -143,7 +144,7 @@ public class ChatServiceImpl implements ChatService {
                 question.length() > 80 ? question.substring(0, 80) + "…" : question);
 
         return new RetrievalResult(type, null, history, null,
-                null, hits, context, focusCompany, t1 - t0, 0);
+                null, hits, context, focusCompany, t1 - t0, 0, strategy.name);
     }
 
     // ----------------------------------------------------------------
@@ -198,7 +199,7 @@ public class ChatServiceImpl implements ChatService {
         String answer;
         try {
             String prompt = promptBuilder.build(request.getQuestion(), retrieval.context(),
-                    retrieval.questionType(), retrieval.history(), retrieval.focusCompany());
+                    retrieval.questionType(), retrieval.history(), retrieval.focusCompany(), retrieval.strategyName());
             throttleClaudeCall();
             Response<AiMessage> aiResponse = chatLanguageModel.generate(List.of(UserMessage.from(prompt)));
             answer = aiResponse.content().text();
@@ -289,8 +290,8 @@ public class ChatServiceImpl implements ChatService {
             // 3. Call Claude (streaming)
             throttleClaudeCall();
             streamingChatLanguageModel.generate(
-                    promptBuilder.build(question, retrieval.context(),
-                            retrieval.questionType(), retrieval.history(), retrieval.focusCompany()),
+                    promptBuilder.build(question, retrieval.context(), retrieval.questionType(),
+                            retrieval.history(), retrieval.focusCompany(), retrieval.strategyName()),
                     new StreamingResponseHandler<AiMessage>() {
                         private final StringBuilder fullAnswer = new StringBuilder();
 
@@ -714,12 +715,24 @@ public class ChatServiceImpl implements ChatService {
      * the richest vocabulary match. Diversity enforced by construction.
      */
     private List<RerankedHit> executeMultiCompany(RetrievalContext ctx) {
+        // Detect if behavioral themed — use intent tags for per-company retrieval
+        // so companies without relevant behavioral content naturally score lower
+        List<IntentTag> intents = isBehavioralThemed(ctx.question())
+                ? queryIntentClassifier.classify(ctx.question())
+                : List.of();
+
         List<SearchHit> candidates = retrieveCandidatesPerCompany(
-                ctx.queries().get(0), ctx.embeddingCfg(), List.of());
+                ctx.queries().get(0), ctx.embeddingCfg(), intents);
+
         List<RerankedHit> hits = candidates.stream()
                 .map(h -> new RerankedHit(h, h.score()))
                 .collect(Collectors.toList());
         return enforceCompanyDiversity(hits, candidates);
+    }
+
+    private boolean isBehavioralThemed(String question) {
+        String lower = question.toLowerCase();
+        return AnswerFormatResolver.BEHAVIORAL_THEMES.stream().anyMatch(lower::contains);
     }
 
     private List<Vos.SourceChunk> toSources(List<RerankedHit> hits) {

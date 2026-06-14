@@ -11,6 +11,8 @@ public enum PromptKey {
     TYPE_HINT_STRATEGIC("type_hint_strategic"),   // salary / weakness / conflict
     TYPE_HINT_BEHAVIORAL("type_hint_behavioral"), // STAR / tell-me-about-a-time
     TYPE_HINT_DEFAULT("type_hint_default"),       // fallback for unclassified questions
+    TYPE_HINT_MULTI_COMPANY_SUMMARY("type_hint_multi_company_summary"),
+    TYPE_HINT_MULTI_COMPANY_BEHAVIORAL("type_hint_multi_company_behavioral"),
 
     // Ingestion-time prompts (called during document upload, not per query)
     CONTEXTUAL_RETRIEVAL_PREFIX("contextual_retrieval_prefix"), // 1-2 sentence context prefix per chunk

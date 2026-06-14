@@ -74,7 +74,7 @@ public class EvalChatServiceImpl implements EvalChatService {
             // 3. Call Claude — cache deliberately not consulted
             long tLlmStart = System.currentTimeMillis();
             String prompt = promptBuilder.build(aCase.question(), r.context(),
-                    r.questionType(), r.history(), r.focusCompany());
+                    r.questionType(), r.history(), r.focusCompany(), r.strategyName());
             throttleClaudeCall();
             Response<AiMessage> response = chatLanguageModel.generate(
                     List.of(UserMessage.from(prompt)));

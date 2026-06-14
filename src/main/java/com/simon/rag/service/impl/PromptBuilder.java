@@ -1,20 +1,24 @@
 package com.simon.rag.service.impl;
 
 import com.simon.rag.comm.enums.PromptKey;
+import com.simon.rag.comm.enums.PromptMode;
 import com.simon.rag.comm.enums.QuestionType;
 import com.simon.rag.config.RagProperties;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class PromptBuilder {
 
     private final PromptTemplateService promptTemplateService;
     private final RagProperties ragProperties;
+    private final AnswerFormatResolver answerFormatResolver;
 
     public String build(String question, String context) {
         return build(question, context, QuestionType.BEHAVIORAL, "", null);
@@ -28,24 +32,32 @@ public class PromptBuilder {
         return build(question, context, type, history, null);
     }
 
-    public String build(String question, String context, QuestionType type, String history, String focusCompany) {
-        PromptKey typeHintKey = switch (type) {
-            case FACTUAL    -> PromptKey.TYPE_HINT_FACTUAL;
-            case TECHNICAL  -> PromptKey.TYPE_HINT_TECHNICAL;
-            case STRATEGIC  -> PromptKey.TYPE_HINT_STRATEGIC;
-            case BEHAVIORAL -> PromptKey.TYPE_HINT_BEHAVIORAL;
-            default         -> PromptKey.TYPE_HINT_DEFAULT;
+    public String build(String question, String context, QuestionType type,
+                        String history, String focusCompany, String strategyName) {
+
+        PromptMode mode = answerFormatResolver.resolve(type, strategyName, question);
+        log.info("prompt mode={}", mode.name());
+
+        PromptKey typeHintKey = switch (mode) {
+            case SINGLE_STAR               -> PromptKey.TYPE_HINT_BEHAVIORAL;
+            case MULTI_COMPANY_SUMMARY     -> PromptKey.TYPE_HINT_MULTI_COMPANY_SUMMARY;
+            case MULTI_COMPANY_BEHAVIORAL  -> PromptKey.TYPE_HINT_MULTI_COMPANY_BEHAVIORAL;
+            case FACTUAL_SHORT             -> PromptKey.TYPE_HINT_FACTUAL;
+            default                        -> switch (type) {
+                case TECHNICAL  -> PromptKey.TYPE_HINT_TECHNICAL;
+                case STRATEGIC  -> PromptKey.TYPE_HINT_STRATEGIC;
+                default         -> PromptKey.TYPE_HINT_DEFAULT;
+            };
         };
+
         String typeHint = promptTemplateService.get(typeHintKey);
 
-        // Use caller-supplied focusCompany (already computed) to avoid re-scanning history
         if (focusCompany == null) focusCompany = extractFocusCompany(question, history);
         String companyContextHint = focusCompany != null
-                ? buildCompanyContextHint(focusCompany)
-                : "";
+                ? buildCompanyContextHint(focusCompany) : "";
 
         String historySection = (history == null || history.isBlank()) ? "" :
-                "\nRecent conversation (use for context only — do not repeat these answers):\n" + history + "\n";
+                "\nRecent conversation (use for context only):\n" + history + "\n";
 
         return promptTemplateService.get(PromptKey.SYSTEM_PROMPT)
                 .replace("{{typeHint}}", typeHint)
@@ -53,6 +65,10 @@ public class PromptBuilder {
                 .replace("{{historySection}}", historySection)
                 .replace("{{context}}", context)
                 .replace("{{question}}", question);
+    }
+
+    public String build(String question, String context, QuestionType type, String history, String focusCompany) {
+        return build(question, context, type, history, focusCompany, null);
     }
 
     private String buildCompanyContextHint(String focusCompany) {

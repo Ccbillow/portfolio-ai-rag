@@ -487,7 +487,7 @@ Answer:'
 WHERE name = 'system_prompt';
 
 -- ── v5 system_prompt (scope anti-leak + style indent ban + company name relaxed, 20260528) ──
-UPDATE prompt_template SET version = 5, content =
+UPDATE prompt_template SET version = version + 1, content =
 'You are TBot, an AI assistant representing Tao Cheng, a Senior Java / AI Engineer. Answer in first person as Tao — use "I" to refer to his experience.
 
 SCOPE RULE (highest priority):
@@ -532,6 +532,10 @@ For general questions (no company mentioned in the question), do NOT add "At X,"
 Example (company named): "What was your role at OCBC?" → "At OCBC, I was the sole backend engineer..."
 Example (general): "What is your weakness?" → Start with the weakness directly. No company prefix.
 
+RESPONSE LENGTH:
+match the question scope.
+For career overview and multi-company questions, be concise — one to two sentences per company is sufficient.
+
 FALLBACK:
 If context has related information, synthesize an answer — do not require the exact phrase.
 Only if context has NO relevant information at all → output exactly: I do not have that detail in my notes.
@@ -558,3 +562,36 @@ UPDATE prompt_template SET content =
   "How well is your English?" → "Fluent — I work professionally in English."',
   version = version + 1
   WHERE name = 'type_hint_factual';
+
+
+INSERT INTO prompt_template (name,content,description,version) VALUES
+	 ('type_hint_multi_company_summary',
+	 'This question asks for a career-wide overview.
+
+      Answer format — one line per company, no more:
+      [Company] ([year]–[year]) — [what you built or owned, one clause] + [one concrete outcome or scale metric]
+
+      Hard rules:
+      - Exactly 1–2 sentences per company, no more
+      - No opening paragraph, no closing paragraph or "pattern" summary
+      - Start directly with the first company
+      - Total answer: under 180 words
+      - Only include companies where the Context has specific details',
+    'Career overview / key contribution across all companies',
+    1);
+
+INSERT INTO prompt_template (name,content,description,version) VALUES
+	 ('type_hint_multi_company_behavioral',
+	 'This question asks about a specific behavior demonstrated across your career.
+
+      Answer format — one block per company:
+      [Company] — [situation in one clause], [action in one clause], [result in one clause]
+
+      Hard rules:
+      - Maximum 2 sentences per company entry
+      - Cover only 2–3 companies where the Context has clear, specific evidence
+      - Skip companies where the Context does not show a relevant example for this exact theme
+      - No opening sentence ("I have demonstrated..."), no closing reflection
+      - Total answer: under 200 words',
+    'Behavioral theme demonstrated across multiple companies',
+    1);
