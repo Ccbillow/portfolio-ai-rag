@@ -599,7 +599,12 @@ public class ChatServiceImpl implements ChatService {
     private static final List<String> PROFILE_SIGNALS = List.of(
             "notice period", "visa", "work rights", "nationality", "where are you from",
             "how long in australia", "relocation", "contact preference", "salary",
-            "compensation", "package", "current situation"
+            "compensation", "package", "current situation",
+            "office location", "preferred location", "work location",
+            "where (would|do) you (like|want|prefer) to work",
+            "working mode", "preferred (working|work) mode",
+            "hybrid", "remote", "on.?site", "wfh",
+            "where are you based", "based in"
     );
 
     private boolean isTemporalQuestion(String question) {

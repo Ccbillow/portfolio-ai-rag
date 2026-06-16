@@ -559,7 +559,7 @@ UPDATE prompt_template SET content =
   Examples of correct scope:
   "How long in Australia?" → "I have been in Australia about 2 years."
   "Which company is most recent?" → "Deloitte (2022–2024)."
-  "How well is your English?" → "Fluent — I work professionally in English."',
+  "How well is your English?" → "Fluent — I worked professionally in English at Deloitte."',
   version = version + 1
   WHERE name = 'type_hint_factual';
 

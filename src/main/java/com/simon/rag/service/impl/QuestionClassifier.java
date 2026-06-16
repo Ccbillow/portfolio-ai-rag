@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
  * Rule-based question classifier — zero LLM cost.
  *
  * Priority order (first match wins):
- *   INVALID → OUT_OF_SCOPE → STRATEGIC → FACTUAL → TECHNICAL → BEHAVIORAL
+ *   INVALID → OUT_OF_SCOPE → STRATEGIC → CONTACT_REDIRECT → PERSONAL → FACTUAL → BEHAVIORAL_PRE → TECHNICAL → BEHAVIORAL
  */
 @Component
 public class QuestionClassifier {
@@ -31,9 +31,12 @@ public class QuestionClassifier {
             "list (?:\\w+ ){0,3}questions?|what questions (?:should|can|would))\\b");
 
     private static final Pattern CONTACT_REDIRECT_PATTERN = Pattern.compile(
-            "(?i)(\\bphone\\s*(number)?\\b|\\bemail\\s*(address)?\\b|" +
+            "(?i)(\\bphone\\s*number\\b|\\bemail\\s*(address)?\\b|" +
             "\\bcontact\\s*(number|detail|info|method)\\b|" +
-            "how (can|do|should) (i|we|you) (reach|contact|call|email)|" +
+            "\\byour contact\\b|\\bpreferred contact\\b|" +
+            "\\bbest way to (contact|reach)\\b|" +
+            "how (can|do|should|would) (i|we|you|someone|they|a recruiter) (reach|contact|call|email|get in touch with)\\b|" +
+            "\\bhow (would|do) you (like|want|prefer) (us|me|people|someone) to contact\\b|" +
             "\\breach you\\b|\\bget in touch\\b|\\bhow to contact\\b|" +
             "\\b(resume|pdf|cv)\\s*(link|download|file)\\b|" +
             "\\b(link|download)\\s*(to|your|the)?\\s*(resume|cv|pdf)?\\b|" +
@@ -46,11 +49,13 @@ public class QuestionClassifier {
             "what (are|were) you (making|earning|paid)|" +
             "not (good|great|strong) at|" +
             "area.*to improve|room.*to improve|biggest flaw|" +
-            "conflict with (?:my |your |the )?(?:manager|boss|supervisor|director|lead)|" +
-            "argue with (?:my |your |the )?(?:manager|boss|supervisor|director|lead)|" +
-            "disagree.*(?:my |your |the )?(?:manager|boss|supervisor|director|lead)|" +
             "difficult.*(?:manager|colleague|coworker)|" +
-            "why should we (?:hire|choose) you over|what makes you better than)\\b");
+            "why should we (?:hire|choose) you over|what makes you better than|" +
+            "\\breference(s)?\\b|\\b referee(s)?\\b|" +
+            "\\bprovide (a |any )?reference|\\bcharacter reference|" +
+            "\\bprofessional reference|\\bpersonal reference|" +
+            "\\bAustralian reference|\\bprevious (manager|employer|boss) contact|" +
+            "\\bcontact (?:your |the )?(?:previous |former )?(?:manager|employer|boss))\\b");
 
     private static final Pattern PERSONAL_PATTERN = Pattern.compile(
             "(?i)\\b(do you have (?:children|kids|a family)|" +
