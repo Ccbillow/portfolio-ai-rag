@@ -22,6 +22,11 @@ public class BusinessException extends RuntimeException {
         this.code = ResultCode.INTERNAL_ERROR.getCode();
     }
 
+    public BusinessException(String message, Throwable cause) {
+        super(message, cause);
+        this.code = ResultCode.INTERNAL_ERROR.getCode();
+    }
+
     public BusinessException(ResultCode resultCode) {
         super(resultCode.getMessage());
         this.code = resultCode.getCode();

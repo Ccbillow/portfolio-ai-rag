@@ -1,9 +1,11 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.service.ingestion.ChunkSplitter;
 import dev.langchain4j.data.segment.TextSegment;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -11,7 +13,8 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 @Component
-public class MarkdownHeadingChunkSplitter {
+@Order(1)
+public class MarkdownHeadingChunkSplitter implements ChunkSplitter {
     private static final Logger log = LoggerFactory.getLogger(MarkdownHeadingChunkSplitter.class);
 
     private static final Pattern H2_PATTERN = Pattern.compile("(?m)^(## .+)$");
@@ -22,11 +25,17 @@ public class MarkdownHeadingChunkSplitter {
     @Value("${rag.splitter.chunk-overlap:150}")
     private int chunkOverlap;
 
+    @Override
+    public boolean supports(String fileName, String text) {
+        return isMarkdown(fileName, text);
+    }
+
     public boolean isMarkdown(String fileName, String rawText) {
         return fileName.toLowerCase().endsWith(".md")
                 || H2_PATTERN.matcher(rawText).find();
     }
 
+    @Override
     public List<TextSegment> split(String rawText) {
         List<TextSegment> result = new ArrayList<>();
         String docHeading = extractDocHeading(rawText);

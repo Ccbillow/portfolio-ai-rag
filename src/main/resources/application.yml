@@ -82,6 +82,7 @@ rag:
     enabled: true
     concurrency: 2
     rate-limit-ms: 1500
+    batch-size: 5   # chunks per Claude call; keep so batch output stays under max-tokens
   intent-classifier:
     llm-fallback: true
   raptor:

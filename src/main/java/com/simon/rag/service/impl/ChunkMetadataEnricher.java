@@ -1,5 +1,6 @@
 package com.simon.rag.service.impl;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.simon.rag.comm.enums.BehavioralTag;
 import com.simon.rag.comm.enums.ChunkType;
@@ -58,24 +59,6 @@ public class ChunkMetadataEnricher {
         Return ONLY valid JSON. No explanation. No markdown fences.
         """;
 
-    private static final String USER_TEMPLATE = """
-        Extract metadata from this work experience segment:
-
-        ---
-        %s
-        ---
-
-        Return JSON:
-        {
-          "project": "",
-          "skills": [],
-          "intent_tags": [],
-          "behavioral_tags": [],
-          "chunk_type": "",
-          "confidence": 0.0
-        }
-        """;
-
     private final ChatLanguageModel chatLanguageModel;
     private final ObjectMapper objectMapper;
     private final Executor executor;
@@ -88,6 +71,10 @@ public class ChunkMetadataEnricher {
 
     @Value("${rag.metadata-enrichment.rate-limit-ms:1500}")
     private long rateLimitMs;
+
+    /** Chunks per Claude call. Batching cuts call count ~batchSize× (enrichment only). */
+    @Value("${rag.metadata-enrichment.batch-size:5}")
+    private int batchSize;
 
     /** Global rate limiter — shared across all concurrent enrichAll() calls. */
     private static final AtomicLong LAST_SUBMIT_MS = new AtomicLong(0);
@@ -114,9 +101,14 @@ public class ChunkMetadataEnricher {
             return segments.stream().map(s -> EnrichmentResult.empty()).toList();
         }
 
-        List<CompletableFuture<EnrichmentResult>> futures = new ArrayList<>();
+        // Partition into batches — one Claude call per batch cuts call count ~batchSize×.
+        List<List<TextSegment>> batches = new ArrayList<>();
+        for (int i = 0; i < segments.size(); i += batchSize) {
+            batches.add(segments.subList(i, Math.min(i + batchSize, segments.size())));
+        }
 
-        for (TextSegment segment : segments) {
+        List<CompletableFuture<List<EnrichmentResult>>> futures = new ArrayList<>();
+        for (List<TextSegment> batch : batches) {
             try {
                 globalSemaphore.acquire();
                 // Global throttle: ensure minimum spacing between any two API calls
@@ -131,9 +123,10 @@ public class ChunkMetadataEnricher {
                 globalSemaphore.release();
                 break;
             }
-            CompletableFuture<EnrichmentResult> future = CompletableFuture.supplyAsync(() -> {
+            List<String> texts = batch.stream().map(TextSegment::text).toList();
+            CompletableFuture<List<EnrichmentResult>> future = CompletableFuture.supplyAsync(() -> {
                 try {
-                    return enrich(segment.text());
+                    return enrichBatch(texts);
                 } finally {
                     globalSemaphore.release();
                 }
@@ -141,41 +134,82 @@ public class ChunkMetadataEnricher {
             futures.add(future);
         }
 
-        return futures.stream()
-                .map(f -> {
-                    try { return f.get(30, TimeUnit.SECONDS); }
-                    catch (Exception e) {
-                        log.warn("[MetadataEnricher] Enrichment timed out or failed: {}", e.getMessage());
-                        return EnrichmentResult.empty();
-                    }
-                })
-                .toList();
+        // Flatten batch results back to a per-segment list, preserving order.
+        List<EnrichmentResult> results = new ArrayList<>(segments.size());
+        for (int b = 0; b < futures.size(); b++) {
+            int expected = batches.get(b).size();
+            List<EnrichmentResult> batchResults;
+            try {
+                batchResults = futures.get(b).get(60, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                log.warn("[MetadataEnricher] Batch {} timed out or failed: {}", b, e.getMessage());
+                batchResults = List.of();
+            }
+            for (int i = 0; i < expected; i++) {
+                results.add(i < batchResults.size() ? batchResults.get(i) : EnrichmentResult.empty());
+            }
+        }
+        return results;
     }
 
-    private EnrichmentResult enrich(String text) {
+    /**
+     * One Claude call for a batch of chunks. Returns a per-chunk list aligned to input order.
+     * The model echoes each chunk's "index" so a dropped item can't shift the whole batch.
+     */
+    private List<EnrichmentResult> enrichBatch(List<String> texts) {
         try {
             Response<AiMessage> response = chatLanguageModel.generate(List.of(
                     SystemMessage.from(SYSTEM_PROMPT),
-                    UserMessage.from(USER_TEMPLATE.formatted(trimText(text)))
+                    UserMessage.from(buildBatchPrompt(texts))
             ));
 
             String raw = stripMarkdownFences(response.content().text().strip());
-            @SuppressWarnings("unchecked")
-            Map<String, Object> json = objectMapper.readValue(raw, Map.class);
+            List<Map<String, Object>> arr = objectMapper.readValue(raw, new TypeReference<>() {});
 
-            return EnrichmentResult.builder()
-                    .project(stringOrEmpty(json, "project"))
-                    .skills(listOrEmpty(json, "skills"))
-                    .intentTags(parseIntentTags(json))
-                    .behavioralTags(parseBehavioralTags(json))
-                    .chunkType(parseChunkType(json))
-                    .confidence(doubleOrZero(json, "confidence"))
-                    .build();
+            Map<Integer, EnrichmentResult> byIndex = new HashMap<>();
+            for (int pos = 0; pos < arr.size(); pos++) {
+                Map<String, Object> obj = arr.get(pos);
+                int idx = obj.get("index") instanceof Number n ? n.intValue() : pos;
+                byIndex.put(idx, toResult(obj));
+            }
+
+            List<EnrichmentResult> out = new ArrayList<>(texts.size());
+            for (int i = 0; i < texts.size(); i++) {
+                out.add(byIndex.getOrDefault(i, EnrichmentResult.empty()));
+            }
+            return out;
 
         } catch (Exception e) {
-            log.warn("[MetadataEnricher] Parse failed: {}", e.getMessage());
-            return EnrichmentResult.empty();
+            log.warn("[MetadataEnricher] Batch parse failed: {}", e.getMessage());
+            return texts.stream().map(t -> EnrichmentResult.empty()).toList();
         }
+    }
+
+    private String buildBatchPrompt(List<String> texts) {
+        StringBuilder sb = new StringBuilder(
+                "Extract metadata for EACH numbered work-experience segment below.\n\n");
+        for (int i = 0; i < texts.size(); i++) {
+            sb.append('[').append(i).append("]\n")
+              .append(trimText(texts.get(i))).append("\n\n");
+        }
+        sb.append("""
+            Return ONLY a JSON array — one object per segment, in order, each echoing its "index":
+            [
+              {"index":0,"project":"","skills":[],"intent_tags":[],"behavioral_tags":[],"chunk_type":"","confidence":0.0}
+            ]
+            """);
+        return sb.toString();
+    }
+
+    private EnrichmentResult toResult(Map<String, Object> json) {
+        return EnrichmentResult.builder()
+                .project(stringOrEmpty(json, "project"))
+                .skills(listOrEmpty(json, "skills"))
+                .intentTags(parseIntentTags(json))
+                .behavioralTags(parseBehavioralTags(json))
+                .chunkType(parseChunkType(json))
+                .confidence(doubleOrZero(json, "confidence"))
+                .build();
     }
 
     // ── Parsers ─────────────────────────────────────────────────────────────

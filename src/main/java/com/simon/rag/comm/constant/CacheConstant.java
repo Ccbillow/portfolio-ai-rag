@@ -7,6 +7,9 @@ public final class CacheConstant {
     /** Document ingestion task status (TTL 24h) */
     public static final String INGEST_TASK_PREFIX = "rag:ingest:task:";
 
+    /** TTL (hours) for ingestion task status keys written on upload/retry. */
+    public static final long INGEST_STATUS_TTL_HOURS = 24;
+
     /** Chat answer cache — keyed by MD5(question), disabled until production */
     public static final String CHAT_CACHE_PREFIX = "rag:chat:cache:";
 

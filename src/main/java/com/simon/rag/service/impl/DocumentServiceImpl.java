@@ -1,7 +1,10 @@
 package com.simon.rag.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.simon.rag.comm.constant.CacheConstant;
 import com.simon.rag.comm.enums.IngestionStatus;
+import com.simon.rag.comm.exception.BusinessException;
+import com.simon.rag.comm.result.ResultCode;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
 import com.simon.rag.domain.dto.Dtos;
@@ -47,7 +50,7 @@ public class DocumentServiceImpl implements DocumentService {
                                         Long uploadedBy) {
         String fileName = file.getOriginalFilename();
         if (fileName == null || fileName.isBlank()) {
-            throw new RuntimeException("Uploaded file has no filename");
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "Uploaded file has no filename");
         }
 
         // --- Deduplication: skip if a non-failed record with same filename exists ---
@@ -60,12 +63,7 @@ public class DocumentServiceImpl implements DocumentService {
 
         if (existing != null) {
             log.info("Duplicate upload skipped: fileName='{}', existingId={}", fileName, existing.getId());
-            return Vos.DocumentResponse.builder()
-                    .id(existing.getId())
-                    .fileName(existing.getFileName())
-                    .category(existing.getCategory())
-                    .status(existing.getStatus())
-                    .taskId(existing.getTaskId())
+            return base(existing)
                     .chunkCount(existing.getChunkCount())
                     .createdAt(existing.getCreatedAt())
                     .message("File already exists — embedding skipped to avoid duplicate cost")
@@ -78,7 +76,7 @@ public class DocumentServiceImpl implements DocumentService {
         try (java.io.InputStream in = file.getInputStream()) {
             Files.copy(in, diskPath);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to save uploaded file to disk", e);
+            throw new BusinessException("Failed to save uploaded file to disk", e);
         }
 
         // --- Persist metadata to MySQL — clean up temp file if this fails ---
@@ -94,20 +92,25 @@ public class DocumentServiceImpl implements DocumentService {
             documentMapper.insert(doc);
         } catch (Exception e) {
             try { Files.deleteIfExists(diskPath); } catch (IOException ignored) {}
-            throw new RuntimeException("Failed to persist document metadata", e);
+            throw new BusinessException("Failed to persist document metadata", e);
         }
 
-        redisCacheService.setIngestionStatus(taskId, IngestionStatus.PENDING.name(), 24);
+        redisCacheService.setIngestionStatus(taskId, IngestionStatus.PENDING.name(),
+                CacheConstant.INGEST_STATUS_TTL_HOURS);
 
         ingestionRunner.ingest(doc.getId(), taskId, fileName, request.getCategory());
 
+        return base(doc).build();
+    }
+
+    /** Prefills a DocumentResponse builder with the fields common to every response. */
+    private Vos.DocumentResponse.DocumentResponseBuilder base(Document doc) {
         return Vos.DocumentResponse.builder()
                 .id(doc.getId())
                 .fileName(doc.getFileName())
                 .category(doc.getCategory())
-                .status(IngestionStatus.PENDING.name())
-                .taskId(taskId)
-                .build();
+                .status(doc.getStatus())
+                .taskId(doc.getTaskId());
     }
 
     @Override
@@ -137,14 +140,9 @@ public class DocumentServiceImpl implements DocumentService {
         Page<Document> result = documentMapper.selectPage(new Page<>(page, size), null);
         return Vos.PageResponse.<Vos.DocumentResponse>builder()
                 .records(result.getRecords().stream()
-                        .map(doc -> Vos.DocumentResponse.builder()
-                                .id(doc.getId())
-                                .fileName(doc.getFileName())
+                        .map(doc -> base(doc)
                                 .fileType(doc.getFileType())
-                                .category(doc.getCategory())
                                 .chunkCount(doc.getChunkCount())
-                                .status(doc.getStatus())
-                                .taskId(doc.getTaskId())
                                 .createdAt(doc.getCreatedAt())
                                 .build())
                         .collect(Collectors.toList()))
@@ -167,21 +165,17 @@ public class DocumentServiceImpl implements DocumentService {
     public Vos.DocumentResponse retryIngestion(Long documentId) {
         Document doc = documentMapper.selectById(documentId);
         if (doc == null) {
-            throw new RuntimeException("Document not found: " + documentId);
+            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "Document not found: " + documentId);
         }
 
         if (COMPLETED.name().equals(doc.getStatus())) {
-            return Vos.DocumentResponse.builder()
-                    .id(doc.getId()).fileName(doc.getFileName())
-                    .status(doc.getStatus()).taskId(doc.getTaskId())
+            return base(doc)
                     .message("Ingestion already completed — no retry needed.")
                     .build();
         }
 
         if (FAILED.name().equals(doc.getStatus())) {
-            return Vos.DocumentResponse.builder()
-                    .id(doc.getId()).fileName(doc.getFileName())
-                    .status(doc.getStatus()).taskId(doc.getTaskId())
+            return base(doc)
                     .message("Status is FAILED — please re-upload the file.")
                     .build();
         }
@@ -192,24 +186,21 @@ public class DocumentServiceImpl implements DocumentService {
             // Temp file is gone — reset to FAILED so the same filename can be re-uploaded
             documentMapper.updateIngestionResult(documentId, FAILED.name(), 0,
                     "Reset by retry: temp file missing, please re-upload the file.");
-            redisCacheService.setIngestionStatus(doc.getTaskId(), FAILED.name(), 24);
+            redisCacheService.setIngestionStatus(doc.getTaskId(), FAILED.name(),
+                    CacheConstant.INGEST_STATUS_TTL_HOURS);
             log.warn("Retry reset docId={} to FAILED (temp file missing)", documentId);
-            return Vos.DocumentResponse.builder()
-                    .id(doc.getId()).fileName(doc.getFileName())
-                    .status(FAILED.name()).taskId(doc.getTaskId())
+            return base(doc).status(FAILED.name())
                     .message("Temp file no longer on disk. Status reset to FAILED — please re-upload the file.")
                     .build();
         }
 
         // File on disk — re-trigger async ingestion
-        redisCacheService.setIngestionStatus(doc.getTaskId(), PENDING.name(), 24);
+        redisCacheService.setIngestionStatus(doc.getTaskId(), PENDING.name(),
+                CacheConstant.INGEST_STATUS_TTL_HOURS);
         ingestionRunner.ingest(doc.getId(), doc.getTaskId(), doc.getFileName(), doc.getCategory());
         log.info("Retry triggered for docId={}, taskId={}", documentId, doc.getTaskId());
 
-        return Vos.DocumentResponse.builder()
-                .id(doc.getId()).fileName(doc.getFileName())
-                .category(doc.getCategory()).status(PENDING.name())
-                .taskId(doc.getTaskId())
+        return base(doc).status(PENDING.name())
                 .message("Ingestion retry triggered.")
                 .build();
     }
