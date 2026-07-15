@@ -1,4 +1,4 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.cache;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.simon.rag.comm.constant.CacheConstant;
@@ -26,7 +26,8 @@ public class RedisCacheService {
     //  Chat answer cache
     // ----------------------------------------------------------------
 
-    public Vos.ChatResponse getChatCache(String key, long start) {
+    public Vos.ChatResponse getChatCache(String sessionId, String question, long start) {
+        String key = chatCacheKey(sessionId, question);
         try {
             String json = redisTemplate.opsForValue().get(key);
             if (json != null) {
@@ -45,14 +46,20 @@ public class RedisCacheService {
         return null;
     }
 
-    public void putChatCache(String key, Vos.ChatResponse response) {
+    public void putChatCache(String sessionId, String question, Vos.ChatResponse response) {
         try {
             redisTemplate.opsForValue().set(
-                    key, objectMapper.writeValueAsString(response),
+                    chatCacheKey(sessionId, question), objectMapper.writeValueAsString(response),
                     ragProperties.getCache().getTtlHours(), TimeUnit.HOURS);
         } catch (Exception e) {
             log.warn("Cache write failed: {}", e.getMessage());
         }
+    }
+
+    /** Key derivation owned here — callers pass (sessionId, question), never raw keys. */
+    private static String chatCacheKey(String sessionId, String question) {
+        return CacheConstant.CHAT_CACHE_PREFIX + org.springframework.util.DigestUtils.md5DigestAsHex(
+                (sessionId + ":" + question).getBytes(StandardCharsets.UTF_8));
     }
 
     // ----------------------------------------------------------------
@@ -63,16 +70,15 @@ public class RedisCacheService {
     private static final int  SESSION_TURN_LIMIT = 15;
     private static final long HISTORY_TTL_MIN    = 60;
 
-    public String getConversationHistory(String sessionId) {
-        if (sessionId == null || sessionId.isBlank()) return "";
+    public ConversationHistory getConversationHistory(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return ConversationHistory.EMPTY;
         try {
             String key = CacheConstant.CONVERSATION_HISTORY_PREFIX + sessionId;
             List<String> turns = redisTemplate.opsForList().range(key, 0, -1);
-            if (turns == null || turns.isEmpty()) return "";
-            return String.join("\n\n", turns);
+            return ConversationHistory.fromEntries(turns);
         } catch (Exception e) {
             log.warn("History read failed: sessionId={}, err={}", sessionId, e.getMessage());
-            return "";
+            return ConversationHistory.EMPTY;
         }
     }
 

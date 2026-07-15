@@ -1,4 +1,4 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.ingestion;
 
 import com.simon.rag.service.ingestion.ChunkSplitter;
 import dev.langchain4j.data.segment.TextSegment;
@@ -73,15 +73,32 @@ public class MarkdownHeadingChunkSplitter implements ChunkSplitter {
         String text = cleanMarkdown(raw);
 
         if (text.length() > maxChunkSize) {
+            // Fall back to sentence-level splitting; every sub-chunk inherits the heading metadata.
+            List<String> subChunks = SemanticChunkSplitter.sentenceSplit(text, maxChunkSize, chunkOverlap);
+            if (subChunks.size() > 1) {
+                log.info("[Splitter] Oversized section ({} chars > limit {}) sentence-split into {} sub-chunks: '{}'",
+                        text.length(), maxChunkSize, subChunks.size(), abbreviate(heading));
+                for (String sub : subChunks) {
+                    result.add(TextSegment.from(sub, sectionMetadata(heading, docHeading)));
+                }
+                return;
+            }
+            // Single unsplittable sentence — keep as one oversized chunk, flag the source file.
             log.warn("[Splitter] Oversized chunk ({} chars > limit {}): '{}' — " +
                             "split '###' into two sections in the source file.",
-                    text.length(), maxChunkSize,
-                    heading.length() > 70 ? heading.substring(0, 70) + "…" : heading);
+                    text.length(), maxChunkSize, abbreviate(heading));
         }
 
-        result.add(TextSegment.from(text,
-                dev.langchain4j.data.document.Metadata.from("heading", heading)
-                        .put("doc_heading", docHeading)));
+        result.add(TextSegment.from(text, sectionMetadata(heading, docHeading)));
+    }
+
+    private static dev.langchain4j.data.document.Metadata sectionMetadata(String heading, String docHeading) {
+        return dev.langchain4j.data.document.Metadata.from("heading", heading)
+                .put("doc_heading", docHeading);
+    }
+
+    private static String abbreviate(String heading) {
+        return heading.length() > 70 ? heading.substring(0, 70) + "…" : heading;
     }
 
     /**

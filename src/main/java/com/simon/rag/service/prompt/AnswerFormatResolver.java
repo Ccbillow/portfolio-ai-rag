@@ -1,4 +1,4 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.prompt;
 
 import com.simon.rag.comm.enums.PromptMode;
 import com.simon.rag.comm.enums.QuestionType;

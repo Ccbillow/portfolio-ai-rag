@@ -1,10 +1,8 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.retrieval.query;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.simon.rag.comm.enums.IntentTag;
-import dev.langchain4j.data.message.SystemMessage;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import com.simon.rag.llm.LlmClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -115,15 +113,13 @@ public class QueryIntentClassifier {
               → ["leadership"]
             """;
 
-    private final ChatLanguageModel chatLanguageModel;
-    private final ObjectMapper objectMapper;
+    private final LlmClient llmClient;
 
     @Value("${rag.intent-classifier.llm-fallback:true}")
     private boolean llmFallbackEnabled;
 
-    public QueryIntentClassifier(ChatLanguageModel chatLanguageModel, ObjectMapper objectMapper) {
-        this.chatLanguageModel = chatLanguageModel;
-        this.objectMapper = objectMapper;
+    public QueryIntentClassifier(LlmClient llmClient) {
+        this.llmClient = llmClient;
     }
 
     /**
@@ -158,16 +154,11 @@ public class QueryIntentClassifier {
         return matched;
     }
 
-    @SuppressWarnings("unchecked")
     private List<IntentTag> classifyByLlm(String question) {
         try {
-            String raw = chatLanguageModel.generate(List.of(
-                    SystemMessage.from(CLASSIFY_SYSTEM),
-                    UserMessage.from(question)
-            )).content().text().strip();
-
-            raw = stripMarkdownFences(raw);
-            List<String> tags = objectMapper.readValue(raw, List.class);
+            // Hot path (chat latency): gap 0 — no extra wait beyond the shared timeline.
+            List<String> tags = llmClient.generateJson(
+                    CLASSIFY_SYSTEM, question, 0, new TypeReference<>() {});
             return tags.stream()
                     .map(s -> {
                         try {
@@ -182,21 +173,5 @@ public class QueryIntentClassifier {
             log.warn("[IntentClassifier] LLM fallback failed: {}", e.getMessage());
             return List.of();
         }
-    }
-
-    /**
-     * Strips markdown code fences that some Claude models insist on wrapping JSON in.
-     */
-    private String stripMarkdownFences(String raw) {
-        String s = raw.strip();
-        if (s.startsWith("```")) {
-            int start = s.indexOf('\n');
-            if (start < 0) start = 3;
-            else start = start + 1;
-            int end = s.lastIndexOf("```");
-            if (end < 0) end = s.length();
-            s = s.substring(start, end).strip();
-        }
-        return s;
     }
 }

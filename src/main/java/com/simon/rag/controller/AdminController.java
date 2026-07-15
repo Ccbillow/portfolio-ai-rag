@@ -4,7 +4,7 @@ import com.simon.rag.comm.result.Result;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.entity.PromptTemplate;
 import com.simon.rag.domain.vo.Vos;
-import com.simon.rag.service.impl.PromptTemplateService;
+import com.simon.rag.service.prompt.PromptTemplateService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;

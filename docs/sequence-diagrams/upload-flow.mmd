@@ -22,22 +22,28 @@ sequenceDiagram
     Note over API: Background thread — rag-async-*
 
     API->>API: Tika parse to plain text
-    API->>API: Semantic split — paragraph boundaries → sentence fallback (1000/150)
-    API->>API: Attach metadata per chunk (docId, fileName, category, chunkIndex)
+    API->>API: MarkdownHeadingChunkSplitter — split by ## / ### headings
+
+    API->>API: Attach base metadata per chunk (docId, fileName, category, chunkIndex)
+
+    API->>Claude: ChunkMetadataEnricher — tag each chunk (parallel, global Semaphore(2), throttle 1500ms)
+    Note right of API: Extract intent_tags, behavioral_tags, chunk_type, project, skills.
+    Claude-->>API: Structured JSON per chunk
 
     API->>Claude: RAPTOR — generate document summary (1 call)
     Claude-->>API: 4-6 sentence summary chunk (prepended, chunkType=document_summary)
 
-    API->>Claude: Contextual Retrieval — context prefix per chunk (parallel, Semaphore 3)
-    Claude-->>API: 1-2 sentence prefix prepended to each chunk's embedding text
+    API->>Claude: Contextual Retrieval — context prefix per chunk (parallel, Semaphore(3))
+    Note right of API: Each chunk gets a 1-2 sentence prefix describing, better for embedding.
+    Claude-->>API: Context prefix per chunk
 
-    API->>OpenAI: Embed all chunks in batches of 100 (enriched text)
+    API->>OpenAI: Embed all chunks in batches of 100 (enriched text + context prefix)
     OpenAI-->>API: float[1536] dense vectors
 
     API->>API: BM25-IDF vectorize each chunk (in-process)
     API->>API: Tag each chunk with company labels
 
-    API->>Qdrant: Upsert points — dense + sparse vectors + payload
+    API->>Qdrant: Upsert points — dense + sparse vectors + payload (incl. intent_tags, behavioral_tags)
     Qdrant-->>API: OK
 
     API->>MySQL: UPDATE status=COMPLETED, chunk_count=N

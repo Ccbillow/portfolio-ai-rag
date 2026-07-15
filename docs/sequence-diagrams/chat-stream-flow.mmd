@@ -2,6 +2,8 @@ sequenceDiagram
     actor Browser
     participant API as Spring Boot
     participant Redis
+    participant QC as QuestionClassifier
+    participant QIC as QueryIntentClassifier
     participant Qdrant
     participant Cohere
     participant Claude as Claude Haiku
@@ -10,7 +12,7 @@ sequenceDiagram
 
     API->>API: Rate limit check (5/min · 20/day per IP)
 
-    API->>API: Classify question (rule-based, zero LLM cost)
+    API->>QC: classify(question)
     alt INVALID / OUT_OF_SCOPE / STRATEGIC / CONTACT
         API-->>Browser: SSE early-return message + done
     end
@@ -20,18 +22,48 @@ sequenceDiagram
         API-->>Browser: SSE limit message + done
     end
 
+    Note over API: Query Preparation
     API->>Redis: GET conversation history (last 2 turns)
-    API->>API: Extract company focus from question + history
-    API->>API: Resolve ambiguous pronouns using last answer snippet
+    API->>API: Extract focus company from question + history
+    API->>API: Multi-query expansion → resolve ambiguous pronouns
+    API->>API: Resolve sibling companies (e.g. OCBC → [Sanofi, Deloitte])
 
-    API->>Qdrant: Hybrid search — dense + BM25 sparse, RRF fusion
-    Note over API,Qdrant: candidateK = 10, company-scoped filter
-    Qdrant-->>API: Top 10 candidates (RRF ranked)
+    Note over API,QIC: Strategy Selection (selectStrategy)
+    alt Multi-company question? (focusCompany=null + “past few jobs” signals)
+        API->>API: Strategy → MULTI_COMPANY
+        Note right of API: Per-company targeted search (2 hits each), no rerank, enforce diversity
+        loop Each known company
+            API->>Qdrant: Hybrid search (dense + sparse, limit=2, company filter)
+            Note right of Qdrant: Behavioral-themed? → add intent_tags scoring boost
+        end
+        Qdrant-->>API: 2 candidates per company, deduped by (docId:chunkIndex)
+        API->>API: Enforce company diversity (min 1 hit per company)
+    else BEHAVIORAL / TECHNICAL
+        API->>QIC: classify intents (rule-based → LLM fallback)
+        QIC-->>API: 1-3 intent_tags (e.g. [growth, conflict, leadership])
+        API->>API: Strategy → BEHAVIORAL
+        Note right of API: Global hybrid search + Cohere rerank (minScore cutoff)
+        API->>Qdrant: Hybrid search (RRF fusion, candidateK=limit×2)
+        Note right of Qdrant: must=[company], should=[intent_tags] scoring boost
+        Qdrant-->>API: RRF-ranked candidates
+        API->>Cohere: Rerank (rerank-v3.5, minScore=0.18)
+        Cohere-->>API: Top-N by cross-encoder score
+    else FACTUAL — temporal / profile
+        API->>API: Strategy → FACTUAL_TEMPORAL / FACTUAL_PROFILE
+        Note right of API: Hybrid search only, no intent filter, no rerank
+        API->>Qdrant: Hybrid search
+        Qdrant-->>API: Candidates
+    else FACTUAL — experience
+        API->>API: Strategy → FACTUAL_EXPERIENCE
+        Note right of API: Hybrid search + rerankTopN (no minScore cutoff)
+        API->>Qdrant: Hybrid search
+        Qdrant-->>API: Candidates
+        API->>Cohere: Rerank (rerankTopN, no minScore)
+        Cohere-->>API: Top-N
+    end
 
-    API->>Cohere: Rerank (rerank-v3.5)
-    Cohere-->>API: Top 5 by cross-encoder score (min 0.18)
-
-    API->>API: Company scope post-filter
+    API->>API: Company allowlist post-filter (focus + siblings + parent)
+    Note right of API: e.g. OCBC → allow [OCBC, Sanofi, Deloitte]. Chunks carrying other companies excluded.
 
     API-->>Browser: SSE event:sources (chunk previews)
 

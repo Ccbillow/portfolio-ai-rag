@@ -1,17 +1,20 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.service.cache.RedisCacheService;
+import com.simon.rag.service.ingestion.IngestionRunner;
+import com.simon.rag.service.ingestion.UploadStorage;
+import com.simon.rag.service.vectorstore.QdrantSearchService;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.simon.rag.comm.constant.CacheConstant;
 import com.simon.rag.comm.enums.IngestionStatus;
 import com.simon.rag.comm.exception.BusinessException;
 import com.simon.rag.comm.result.ResultCode;
-import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.entity.Document;
 import com.simon.rag.domain.vo.Vos;
 import com.simon.rag.service.DocumentService;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -19,9 +22,6 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -36,13 +36,7 @@ public class DocumentServiceImpl implements DocumentService {
     private final RedisCacheService redisCacheService;
     private final IngestionRunner ingestionRunner;
     private final QdrantSearchService qdrantSearchService;
-    private final RagProperties ragProperties;
-
-    @PostConstruct
-    void initUploadDir() throws IOException {
-        Files.createDirectories(Path.of(ragProperties.getUpload().getDir()));
-        log.info("Upload dir ready: {}", ragProperties.getUpload().getDir());
-    }
+    private final UploadStorage uploadStorage;
 
     @Override
     public Vos.DocumentResponse upload(MultipartFile file,
@@ -72,12 +66,7 @@ public class DocumentServiceImpl implements DocumentService {
 
         // --- Save file to disk first (decouples file lifetime from HTTP request) ---
         String taskId = UUID.randomUUID().toString();
-        Path diskPath = Path.of(ragProperties.getUpload().getDir(), taskId);
-        try (java.io.InputStream in = file.getInputStream()) {
-            Files.copy(in, diskPath);
-        } catch (IOException e) {
-            throw new BusinessException("Failed to save uploaded file to disk", e);
-        }
+        uploadStorage.save(file, taskId);
 
         // --- Persist metadata to MySQL — clean up temp file if this fails ---
         Document doc = new Document()
@@ -91,7 +80,7 @@ public class DocumentServiceImpl implements DocumentService {
         try {
             documentMapper.insert(doc);
         } catch (Exception e) {
-            try { Files.deleteIfExists(diskPath); } catch (IOException ignored) {}
+            uploadStorage.delete(taskId);
             throw new BusinessException("Failed to persist document metadata", e);
         }
 
@@ -181,8 +170,7 @@ public class DocumentServiceImpl implements DocumentService {
         }
 
         // PENDING or PROCESSING: check if temp file is still on disk
-        Path filePath = Path.of(ragProperties.getUpload().getDir(), doc.getTaskId());
-        if (!Files.exists(filePath)) {
+        if (!uploadStorage.exists(doc.getTaskId())) {
             // Temp file is gone — reset to FAILED so the same filename can be re-uploaded
             documentMapper.updateIngestionResult(documentId, FAILED.name(), 0,
                     "Reset by retry: temp file missing, please re-upload the file.");

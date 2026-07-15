@@ -1,4 +1,4 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.vectorstore;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.simon.rag.config.RagProperties;

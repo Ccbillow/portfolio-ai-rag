@@ -1,4 +1,4 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.retrieval.query;
 
 import com.simon.rag.comm.enums.QuestionType;
 import org.springframework.stereotype.Component;

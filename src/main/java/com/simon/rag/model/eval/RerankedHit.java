@@ -1,6 +1,6 @@
 package com.simon.rag.model.eval;
 
-import com.simon.rag.service.impl.QdrantSearchService.SearchHit;
+import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 
 /**
  * Wraps a SearchHit with its post-rerank score so evaluation can observe both.

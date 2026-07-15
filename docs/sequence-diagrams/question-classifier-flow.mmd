@@ -1,9 +1,12 @@
 sequenceDiagram
     actor Browser
     participant API as Spring Boot
-    participant QC as QuestionClassifier
+    participant QC as QuestionClassifier (Type)
+    participant QIC as QueryIntentClassifier (Retrieval Intent)
 
     Browser->>API: question text
+
+    Note over API,QC: Phase 1 — Gate & Question Type
     API->>QC: classify(question)
 
     QC->>QC: Check length — too short or bare word
@@ -35,15 +38,23 @@ sequenceDiagram
         QC-->>API: FACTUAL — strict citation prompt
     end
 
-    QC->>QC: Match BEHAVIORAL_PRE ("Tell me about a time...")
-    alt BEHAVIORAL
-        QC-->>API: BEHAVIORAL — STAR structure prompt
-    end
-
-    QC->>QC: Match TECHNICAL pattern (architecture / Redis / performance...)
-    alt TECHNICAL
-        QC-->>API: TECHNICAL — explain approach prompt
+    QC->>QC: Match BEHAVIORAL / TECHNICAL pattern
+    alt BEHAVIORAL / TECHNICAL
+        QC-->>API: BEHAVIORAL / TECHNICAL — STAR/story prompt
     end
 
     QC-->>API: BEHAVIORAL (default)
-    API->>API: Continue to retrieval pipeline
+
+    Note over API,QIC: Phase 2 — Retrieval Intent Tags (BEHAVIORAL / TECHNICAL only)
+    API->>QIC: classify(question) — rule-based keyword match first
+    QIC->>QIC: Match against 8 intent keywords
+    alt Keywords matched
+        QIC-->>API: 1-3 intent_tags from rules
+    else No keyword match
+        QIC->>QIC: LLM fallback — classify via Claude prompt
+        QIC-->>API: 1-3 intent_tags from LLM
+    end
+
+    Note right of QIC: Intents: architecture, production_issue, leadership, delivery, technical_depth, ambiguity, conflict, growth
+
+    API->>API: Continue to strategy selection → retrieval

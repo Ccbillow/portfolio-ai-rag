@@ -1,5 +1,7 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.service.ingestion.MarkdownHeadingChunkSplitter;
+
 import dev.langchain4j.data.segment.TextSegment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

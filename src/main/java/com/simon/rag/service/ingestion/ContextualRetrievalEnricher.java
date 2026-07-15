@@ -3,10 +3,9 @@ package com.simon.rag.service.ingestion;
 import com.simon.rag.comm.enums.ChunkType;
 import com.simon.rag.comm.enums.PromptKey;
 import com.simon.rag.config.RagProperties;
-import com.simon.rag.service.impl.PromptTemplateService;
-import dev.langchain4j.data.message.UserMessage;
+import com.simon.rag.llm.LlmClient;
+import com.simon.rag.service.prompt.PromptTemplateService;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.chat.ChatLanguageModel;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -17,7 +16,6 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Contextual Retrieval: prepends a Claude-generated context prefix to each regular
@@ -29,22 +27,19 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class ContextualRetrievalEnricher {
 
-    private final ChatLanguageModel chatLanguageModel;
+    private final LlmClient llmClient;
     private final PromptTemplateService promptTemplateService;
     private final RagProperties ragProperties;
     private final Executor uploadExecutor;
 
-    /** Tracks last Claude API call timestamp for rate limiting. */
-    private final AtomicLong lastCrCallTime = new AtomicLong(0);
-
     /** Shared semaphore bounding concurrency across all documents. */
     private Semaphore crSemaphore;
 
-    public ContextualRetrievalEnricher(ChatLanguageModel chatLanguageModel,
+    public ContextualRetrievalEnricher(LlmClient llmClient,
                                        PromptTemplateService promptTemplateService,
                                        RagProperties ragProperties,
                                        @Qualifier("uploadExecutor") Executor uploadExecutor) {
-        this.chatLanguageModel = chatLanguageModel;
+        this.llmClient = llmClient;
         this.promptTemplateService = promptTemplateService;
         this.ragProperties = ragProperties;
         this.uploadExecutor = uploadExecutor;
@@ -89,8 +84,7 @@ public class ContextualRetrievalEnricher {
                     if (ChunkType.DOCUMENT_SUMMARY.getValue().equals(seg.metadata().getString("chunkType"))) {
                         return seg.text();
                     }
-                    throttleCrCall(crCfg.getRateLimitMs());
-                    String prefix = generateContextPrefix(docContext, seg.text());
+                    String prefix = generateContextPrefix(docContext, seg.text(), crCfg.getRateLimitMs());
                     return prefix.isBlank() ? seg.text() : prefix + "\n\n" + seg.text();
                 } finally {
                     crSemaphore.release();
@@ -105,38 +99,20 @@ public class ContextualRetrievalEnricher {
 
     /**
      * Calls Claude to generate a 1–2 sentence context description for a chunk.
-     * Falls back to empty string on any error so ingestion continues uninterrupted.
+     * Each call sends ~4K input tokens (maxDocChars), so the configured gap
+     * (default 6 s) keeps CR traffic under the Anthropic token/min limit on the
+     * shared global timeline. Falls back to empty string on any error so
+     * ingestion continues uninterrupted.
      */
-    private String generateContextPrefix(String fullDocText, String chunkText) {
+    private String generateContextPrefix(String fullDocText, String chunkText, long gapMs) {
         String prompt = promptTemplateService.get(PromptKey.CONTEXTUAL_RETRIEVAL_PREFIX)
                 .replace("{{docText}}", fullDocText)
                 .replace("{{chunkText}}", chunkText);
         try {
-            return chatLanguageModel.generate(List.of(UserMessage.from(prompt)))
-                    .content().text().strip();
+            return llmClient.generate(prompt, gapMs);
         } catch (Exception e) {
             log.warn("Context prefix generation failed, using raw chunk: {}", e.getMessage());
             return "";
-        }
-    }
-
-    /**
-     * Rate-limits Claude calls to stay under the 50K-token/min Anthropic rate limit.
-     * Each call sends ~4K input tokens (maxDocChars), so a 6 s gap keeps us at
-     * ~10 calls/min ≈ 40K tokens/min with headroom.
-     */
-    private void throttleCrCall(long minGapMs) {
-        while (true) {
-            long prev = lastCrCallTime.get();
-            long now = System.currentTimeMillis();
-            long next = Math.max(now, prev + minGapMs);
-            if (lastCrCallTime.compareAndSet(prev, next)) {
-                long waitMs = next - now;
-                if (waitMs > 0) {
-                    try { Thread.sleep(waitMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-                }
-                return;
-            }
         }
     }
 }

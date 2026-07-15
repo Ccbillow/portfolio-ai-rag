@@ -1,4 +1,4 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.prompt;
 
 import com.simon.rag.comm.enums.PromptKey;
 import com.simon.rag.comm.exception.BusinessException;

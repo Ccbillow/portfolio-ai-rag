@@ -1,22 +1,17 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.retrieval.rerank;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.model.eval.RerankedHit;
-import com.simon.rag.service.impl.QdrantSearchService.SearchHit;
-import io.netty.channel.ChannelOption;
-import io.netty.handler.timeout.ReadTimeoutHandler;
+import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
-import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
-import reactor.netty.http.client.HttpClient;
 
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -30,21 +25,12 @@ public class CohereRerankService {
     private final AtomicLong lastCallTime = new AtomicLong(0);
 
     public CohereRerankService(
-            WebClient.Builder webClientBuilder,
+            @Qualifier("cohereWebClient") WebClient cohereWebClient,
             @Value("${cohere.api-key:}") String apiKey,
             RagProperties ragProperties) {
+        this.webClient = cohereWebClient;
         this.ragProperties = ragProperties;
         this.hasKey = apiKey != null && !apiKey.isBlank();
-        HttpClient httpClient = HttpClient.create()
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5_000)
-                .doOnConnected(conn -> conn.addHandlerLast(
-                        new ReadTimeoutHandler(15, TimeUnit.SECONDS)));
-        this.webClient = webClientBuilder
-                .baseUrl("https://api.cohere.com")
-                .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .defaultHeader("Authorization", "Bearer " + apiKey)
-                .defaultHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
-                .build();
         if (!hasKey) {
             log.warn("COHERE_API_KEY not set — reranker will be skipped");
         }

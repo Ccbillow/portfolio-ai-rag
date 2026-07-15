@@ -1,16 +1,11 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.ingestion;
 
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.simon.rag.comm.enums.BehavioralTag;
 import com.simon.rag.comm.enums.ChunkType;
 import com.simon.rag.comm.enums.IntentTag;
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.SystemMessage;
-import dev.langchain4j.data.message.UserMessage;
+import com.simon.rag.llm.LlmClient;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.output.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -21,7 +16,6 @@ import jakarta.annotation.PostConstruct;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class ChunkMetadataEnricher {
@@ -59,8 +53,7 @@ public class ChunkMetadataEnricher {
         Return ONLY valid JSON. No explanation. No markdown fences.
         """;
 
-    private final ChatLanguageModel chatLanguageModel;
-    private final ObjectMapper objectMapper;
+    private final LlmClient llmClient;
     private final Executor executor;
 
     @Value("${rag.metadata-enrichment.enabled:true}")
@@ -76,9 +69,6 @@ public class ChunkMetadataEnricher {
     @Value("${rag.metadata-enrichment.batch-size:5}")
     private int batchSize;
 
-    /** Global rate limiter — shared across all concurrent enrichAll() calls. */
-    private static final AtomicLong LAST_SUBMIT_MS = new AtomicLong(0);
-
     /** Shared semaphore to cap total concurrent API calls across all files. */
     private Semaphore globalSemaphore;
 
@@ -87,11 +77,9 @@ public class ChunkMetadataEnricher {
         this.globalSemaphore = new Semaphore(concurrency);
     }
 
-    public ChunkMetadataEnricher(ChatLanguageModel chatLanguageModel,
-                                  ObjectMapper objectMapper,
+    public ChunkMetadataEnricher(LlmClient llmClient,
                                   @Qualifier("uploadExecutor") Executor executor) {
-        this.chatLanguageModel = chatLanguageModel;
-        this.objectMapper = objectMapper;
+        this.llmClient = llmClient;
         this.executor = executor;
     }
 
@@ -110,17 +98,11 @@ public class ChunkMetadataEnricher {
         List<CompletableFuture<List<EnrichmentResult>>> futures = new ArrayList<>();
         for (List<TextSegment> batch : batches) {
             try {
+                // Rate limiting is handled by LlmClient on the global timeline;
+                // this semaphore only caps concurrent API calls across all files.
                 globalSemaphore.acquire();
-                // Global throttle: ensure minimum spacing between any two API calls
-                long now = System.currentTimeMillis();
-                long prev = LAST_SUBMIT_MS.getAndSet(now);
-                long elapsed = now - prev;
-                if (elapsed < rateLimitMs && prev > 0) {
-                    Thread.sleep(rateLimitMs - elapsed);
-                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                globalSemaphore.release();
                 break;
             }
             List<String> texts = batch.stream().map(TextSegment::text).toList();
@@ -158,13 +140,8 @@ public class ChunkMetadataEnricher {
      */
     private List<EnrichmentResult> enrichBatch(List<String> texts) {
         try {
-            Response<AiMessage> response = chatLanguageModel.generate(List.of(
-                    SystemMessage.from(SYSTEM_PROMPT),
-                    UserMessage.from(buildBatchPrompt(texts))
-            ));
-
-            String raw = stripMarkdownFences(response.content().text().strip());
-            List<Map<String, Object>> arr = objectMapper.readValue(raw, new TypeReference<>() {});
+            List<Map<String, Object>> arr = llmClient.generateJson(
+                    SYSTEM_PROMPT, buildBatchPrompt(texts), rateLimitMs, new TypeReference<>() {});
 
             Map<Integer, EnrichmentResult> byIndex = new HashMap<>();
             for (int pos = 0; pos < arr.size(); pos++) {
@@ -253,20 +230,6 @@ public class ChunkMetadataEnricher {
 
     private String trimText(String text) {
         return text.length() > 2000 ? text.substring(0, 2000) + "…" : text;
-    }
-
-    /** Strips markdown code fences that some Claude models insist on wrapping JSON in. */
-    private String stripMarkdownFences(String raw) {
-        String s = raw.strip();
-        if (s.startsWith("```")) {
-            int start = s.indexOf('\n');
-            if (start < 0) start = 3;
-            else start = start + 1;
-            int end = s.lastIndexOf("```");
-            if (end < 0) end = s.length();
-            s = s.substring(start, end).strip();
-        }
-        return s;
     }
 
     // ── Result DTO ──────────────────────────────────────────────────────────

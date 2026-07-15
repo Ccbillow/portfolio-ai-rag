@@ -1,34 +1,22 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.ingestion;
 
-import com.simon.rag.comm.enums.BehavioralTag;
+import com.simon.rag.service.cache.RedisCacheService;
+import com.simon.rag.service.vectorstore.EmbeddingService;
+import com.simon.rag.service.vectorstore.QdrantSearchService;
+import com.simon.rag.service.vectorstore.SparseVectorizer;
+
 import com.simon.rag.comm.enums.ChunkType;
 import com.simon.rag.comm.enums.IngestionStatus;
-import com.simon.rag.comm.enums.IntentTag;
-import com.simon.rag.config.RagProperties;
 import com.simon.rag.dao.DocumentMapper;
-import com.simon.rag.service.impl.SparseVectorizer.SparseVector;
-import com.simon.rag.service.ingestion.ChunkSplitter;
-import com.simon.rag.service.ingestion.ChunkSplitterSelector;
-import com.simon.rag.service.ingestion.CompanyTagger;
-import com.simon.rag.service.ingestion.ContextualRetrievalEnricher;
-import com.simon.rag.service.ingestion.DocumentSummarizer;
-import com.simon.rag.service.ingestion.TextExtractor;
 import dev.langchain4j.data.document.Metadata;
-import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.embedding.EmbeddingModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 
 /**
  * Async document ingestion orchestrator: parse → chunk → enrich → summarize →
@@ -45,32 +33,26 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class IngestionRunner {
 
-    /** Sentinel chunkIndex marking the RAPTOR document-summary chunk. */
-    private static final String SUMMARY_INDEX = "summary";
-    /** Max segments per OpenAI embedding request. */
-    private static final int EMBEDDING_BATCH_SIZE = 100;
-
-    private final EmbeddingModel embeddingModel;
+    private final EmbeddingService embeddingService;
     private final QdrantSearchService qdrantSearchService;
     private final SparseVectorizer sparseVectorizer;
     private final DocumentMapper documentMapper;
     private final RedisCacheService redisCacheService;
-    private final RagProperties ragProperties;
+    private final UploadStorage uploadStorage;
     private final ChunkMetadataEnricher metadataEnricher;
     private final TextExtractor textExtractor;
     private final ChunkSplitterSelector chunkSplitterSelector;
-    private final CompanyTagger companyTagger;
     private final DocumentSummarizer documentSummarizer;
     private final ContextualRetrievalEnricher contextualRetrievalEnricher;
+    private final QdrantPointAssembler pointAssembler;
 
     @Async("taskExecutor")
     public void ingest(Long docId, String taskId, String fileName, String category) {
         redisCacheService.setIngestionStatus(taskId, IngestionStatus.PROCESSING.name());
-        Path filePath = Path.of(ragProperties.getUpload().getDir(), taskId);
 
         try {
             // 1 & 2. Extract plain text — streams to avoid loading the full file into heap
-            String text = textExtractor.extract(filePath);
+            String text = textExtractor.extract(uploadStorage.pathOf(taskId));
             log.info("Tika parsed {} chars from '{}'", text.length(), fileName);
 
             // 3. Split via the first strategy that supports this input (markdown → semantic fallback),
@@ -103,7 +85,7 @@ public class IngestionRunner {
                 summaryMeta.put("docId", String.valueOf(docId));
                 summaryMeta.put("fileName", fileName);
                 summaryMeta.put("category", category);
-                summaryMeta.put("chunkIndex", SUMMARY_INDEX);
+                summaryMeta.put("chunkIndex", QdrantPointAssembler.SUMMARY_INDEX);
                 summaryMeta.put("chunkTotal", String.valueOf(segments.size()));
                 summaryMeta.put("chunkType", ChunkType.DOCUMENT_SUMMARY.getValue());
                 segments.add(0, TextSegment.from(summary, summaryMeta));
@@ -112,70 +94,12 @@ public class IngestionRunner {
             // 6. Contextual Retrieval: text to embed per chunk (prefix prepended when enabled)
             List<String> embeddingTexts = contextualRetrievalEnricher.buildEmbeddingTexts(segments, text);
 
-            // 7. Compute dense embeddings (OpenAI) — batch to stay within per-request limits
-            List<Embedding> embeddings = new ArrayList<>();
-            for (int start = 0; start < embeddingTexts.size(); start += EMBEDDING_BATCH_SIZE) {
-                List<TextSegment> batch = embeddingTexts
-                        .subList(start, Math.min(start + EMBEDDING_BATCH_SIZE, embeddingTexts.size()))
-                        .stream().map(TextSegment::from).toList();
-                embeddings.addAll(embeddingModel.embedAll(batch).content());
-            }
+            // 7. Compute dense embeddings (OpenAI) — EmbeddingService handles batching
+            List<float[]> embeddings = embeddingService.embedAll(embeddingTexts);
 
-            // 8. Build Qdrant points with dense + sparse vectors
-            List<QdrantSearchService.PointData> points = new ArrayList<>();
-            for (int i = 0; i < segments.size(); i++) {
-                TextSegment seg = segments.get(i);
-                float[] dense = embeddings.get(i).vector();
-                SparseVector sparse = sparseVectorizer.vectorize(seg.text());
-
-                Map<String, Object> vectors = new LinkedHashMap<>();
-                vectors.put("dense", dense);
-                if (!sparse.isEmpty()) {
-                    vectors.put("sparse",
-                            Map.of("indices", sparse.indices(), "values", sparse.values()));
-                }
-
-                Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("text_segment", seg.text());
-                Metadata meta = seg.metadata();
-                payload.put("docId",       meta.getString("docId"));
-                payload.put("fileName",    meta.getString("fileName"));
-                payload.put("category",    meta.getString("category"));
-                payload.put("chunkIndex",  meta.getString("chunkIndex"));
-                payload.put("chunkTotal",  meta.getString("chunkTotal"));
-
-                // Phase 12: merge companies from heading metadata + filename + chunk text
-                List<String> companies = companyTagger.tag(fileName, seg);
-                if (!companies.isEmpty()) payload.put("companies", companies);
-
-                // Phase 12: enrichment metadata
-                boolean isSummary = SUMMARY_INDEX.equals(meta.getString("chunkIndex"));
-                ChunkMetadataEnricher.EnrichmentResult enr;
-                if (isSummary) {
-                    enr = ChunkMetadataEnricher.EnrichmentResult.empty();
-                    payload.put("chunk_type", ChunkType.DOCUMENT_SUMMARY.getValue());
-                    payload.put("chunk_id", docId + "_summary");
-                    payload.put("chunk_index", -1);
-                } else {
-                    int enrIdx = Integer.parseInt(meta.getString("chunkIndex"));
-                    enr = enrichments.get(enrIdx);
-                    payload.put("chunk_type", enr.chunkType() != null
-                            ? enr.chunkType().getValue() : "");
-                    payload.put("chunk_id", docId + "_chunk_" + i);
-                    payload.put("chunk_index", i);
-                }
-                payload.put("intent_tags", enr.intentTags().stream()
-                        .map(IntentTag::getValue).toList());
-                payload.put("behavioral_tags", enr.behavioralTags().stream()
-                        .map(BehavioralTag::getValue).toList());
-                payload.put("project", enr.project());
-                payload.put("skills", enr.skills());
-                payload.put("parent_id", docId);
-                payload.put("chunk_total", segments.size());
-
-                points.add(new QdrantSearchService.PointData(
-                        UUID.randomUUID().toString(), vectors, payload));
-            }
+            // 8. Build Qdrant points (dense + sparse vectors, payload schema)
+            List<QdrantSearchService.PointData> points =
+                    pointAssembler.assemble(docId, fileName, segments, embeddings, enrichments);
 
             // 9. Upsert to Qdrant
             qdrantSearchService.upsertPoints(points);
@@ -195,8 +119,7 @@ public class IngestionRunner {
             documentMapper.updateIngestionResult(
                     docId, IngestionStatus.FAILED.name(), 0, sanitizeErrorMessage(e));
         } finally {
-            try { Files.deleteIfExists(filePath); }
-            catch (Exception ex) { log.warn("Failed to delete temp file {}: {}", filePath, ex.getMessage()); }
+            uploadStorage.delete(taskId);
         }
     }
 

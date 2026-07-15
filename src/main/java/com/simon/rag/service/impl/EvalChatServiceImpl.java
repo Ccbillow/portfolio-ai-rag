@@ -1,5 +1,8 @@
 package com.simon.rag.service.impl;
 
+import com.simon.rag.service.cache.RedisCacheService;
+import com.simon.rag.service.prompt.PromptBuilder;
+
 import com.simon.rag.model.eval.EvalCase;
 import com.simon.rag.model.eval.EvalResult;
 import com.simon.rag.model.eval.EvalResult.HitDetail;
@@ -7,20 +10,17 @@ import com.simon.rag.model.eval.EvalResult.StageLatency;
 import com.simon.rag.model.eval.EvalResult.TokenStat;
 import com.simon.rag.model.eval.RerankedHit;
 import com.simon.rag.service.EvalChatService;
-import com.simon.rag.service.impl.QdrantSearchService.SearchHit;
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.output.Response;
+import com.simon.rag.llm.LlmClient;
+import com.simon.rag.service.retrieval.RetrievalResult;
+import com.simon.rag.service.retrieval.RetrievalService;
+import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import dev.langchain4j.model.output.TokenUsage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
 @Slf4j
@@ -28,14 +28,10 @@ import java.util.stream.IntStream;
 @RequiredArgsConstructor
 public class EvalChatServiceImpl implements EvalChatService {
 
-    private final ChatServiceImpl chatService;
-    private final ChatLanguageModel chatLanguageModel;
+    private final RetrievalService retrievalService;
+    private final LlmClient llmClient;
     private final PromptBuilder promptBuilder;
     private final RedisCacheService redisCacheService;
-
-    @Value("${claude.rate-limit-ms:3000}")
-    private long claudeRateLimitMs;
-    private final AtomicLong lastClaudeCall = new AtomicLong(0);
 
     @Override
     public EvalResult evaluate(EvalCase aCase) {
@@ -50,14 +46,14 @@ public class EvalChatServiceImpl implements EvalChatService {
             }
 
             // 2. Retrieval pipeline (shared with production ask/askStream)
-            ChatServiceImpl.RetrievalResult r = chatService.retrieve(aCase.question(), sessionId);
+            RetrievalResult r = retrievalService.retrieve(aCase.question(), sessionId);
             if (r.hasEarlyReturn()) {
                 return new EvalResult(
                         aCase.id(), aCase.question(), r.earlyReturn(),
                         r.questionType().name(), null,
                         List.of(),
                         new TokenStat(0, 0, 0),
-                        new StageLatency(System.currentTimeMillis() - t0, r.retrieveMs(), r.rerankMs(), 0),
+                        new StageLatency(System.currentTimeMillis() - t0, r.retrieveMs(), 0, 0),
                         null);
             }
             if (r.noHits()) {
@@ -67,7 +63,7 @@ public class EvalChatServiceImpl implements EvalChatService {
                         r.questionType().name(), r.focusCompany(),
                         List.of(),
                         new TokenStat(0, 0, 0),
-                        new StageLatency(System.currentTimeMillis() - t0, r.retrieveMs(), r.rerankMs(), 0),
+                        new StageLatency(System.currentTimeMillis() - t0, r.retrieveMs(), 0, 0),
                         null);
             }
 
@@ -75,13 +71,11 @@ public class EvalChatServiceImpl implements EvalChatService {
             long tLlmStart = System.currentTimeMillis();
             String prompt = promptBuilder.build(aCase.question(), r.context(),
                     r.questionType(), r.history(), r.focusCompany(), r.strategyName());
-            throttleClaudeCall();
-            Response<AiMessage> response = chatLanguageModel.generate(
-                    List.of(UserMessage.from(prompt)));
+            LlmClient.LlmReply reply = llmClient.chat(prompt);
             long tLlmEnd = System.currentTimeMillis();
 
-            String answer = response.content().text();
-            TokenUsage usage = response.tokenUsage();
+            String answer = reply.text();
+            TokenUsage usage = reply.tokenUsage();
             TokenStat tokens = usage != null
                     ? new TokenStat(
                             nz(usage.inputTokenCount()),
@@ -111,7 +105,7 @@ public class EvalChatServiceImpl implements EvalChatService {
                     new StageLatency(
                             System.currentTimeMillis() - t0,
                             r.retrieveMs(),
-                            r.rerankMs(),
+                            0,
                             tLlmEnd - tLlmStart),
                     null);
 
@@ -127,21 +121,6 @@ public class EvalChatServiceImpl implements EvalChatService {
             try {
                 redisCacheService.clearSession(sessionId);
             } catch (Exception ignored) {
-            }
-        }
-    }
-
-    private void throttleClaudeCall() {
-        while (true) {
-            long prev = lastClaudeCall.get();
-            long now = System.currentTimeMillis();
-            long next = Math.max(now, prev + claudeRateLimitMs);
-            if (lastClaudeCall.compareAndSet(prev, next)) {
-                long waitMs = next - now;
-                if (waitMs > 0) {
-                    try { Thread.sleep(waitMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-                }
-                return;
             }
         }
     }

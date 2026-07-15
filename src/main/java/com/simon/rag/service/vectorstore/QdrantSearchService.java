@@ -1,9 +1,9 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.vectorstore;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.simon.rag.comm.enums.IntentTag;
-import com.simon.rag.service.impl.SparseVectorizer.SparseVector;
+import com.simon.rag.service.vectorstore.SparseVectorizer.SparseVector;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -13,7 +13,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 @Slf4j
 @Service
@@ -25,7 +24,10 @@ public class QdrantSearchService {
     @Value("${qdrant.collection-name}")
     private String collectionName;
 
-    public record SearchHit(double score, String text, String fileName, String category, String docId, int chunkIndex, List<String> companies) {}
+    public record SearchHit(double score, String text, String fileName, String category, String docId, int chunkIndex, List<String> companies) {
+        /** Identity key for merging results across multiple searches. */
+        public String dedupeKey() { return docId + ":" + chunkIndex; }
+    }
 
     // ---- Ingestion ----
 

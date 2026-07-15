@@ -49,7 +49,7 @@ public class SemanticChunkSplitter implements ChunkSplitter {
         for (String para : paragraphs) {
             if (para.length() > targetSize) {
                 if (!buf.isEmpty()) { chunks.add(buf.toString()); buf.setLength(0); }
-                splitBySentence(para, targetSize, overlap, chunks);
+                chunks.addAll(sentenceSplit(para, targetSize, overlap));
                 continue;
             }
             if (!buf.isEmpty() && buf.length() + 2 + para.length() > targetSize) {
@@ -66,7 +66,13 @@ public class SemanticChunkSplitter implements ChunkSplitter {
         return chunks.isEmpty() ? List.of(text) : chunks;
     }
 
-    private void splitBySentence(String text, int targetSize, int overlap, List<String> out) {
+    /**
+     * Splits text at sentence boundaries into chunks of at most {@code targetSize} chars,
+     * carrying a trailing-fragment overlap between consecutive chunks.
+     * Pure function — also used by {@link MarkdownHeadingChunkSplitter} for oversized sections.
+     */
+    static List<String> sentenceSplit(String text, int targetSize, int overlap) {
+        List<String> out = new ArrayList<>();
         String[] sentences = text.split("(?<=[.!?])\\s+");
         StringBuilder buf = new StringBuilder();
         for (String sentence : sentences) {
@@ -80,10 +86,11 @@ public class SemanticChunkSplitter implements ChunkSplitter {
             buf.append(sentence);
         }
         if (!buf.isEmpty()) out.add(buf.toString());
+        return out;
     }
 
     /** Returns the trailing sentence fragment of `chunk` up to `overlap` chars for context continuity. */
-    private String trailingOverlap(String chunk, int overlap) {
+    private static String trailingOverlap(String chunk, int overlap) {
         if (overlap <= 0 || chunk.length() <= overlap) return "";
         String tail = chunk.substring(chunk.length() - overlap);
         int sentenceStart = tail.indexOf(". ");

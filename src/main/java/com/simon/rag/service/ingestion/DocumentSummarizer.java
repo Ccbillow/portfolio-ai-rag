@@ -2,14 +2,11 @@ package com.simon.rag.service.ingestion;
 
 import com.simon.rag.comm.enums.PromptKey;
 import com.simon.rag.config.RagProperties;
-import com.simon.rag.service.impl.PromptTemplateService;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import com.simon.rag.llm.LlmClient;
+import com.simon.rag.service.prompt.PromptTemplateService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-
-import java.util.List;
 
 /**
  * RAPTOR: generates a document-level summary chunk for high-level recall
@@ -20,7 +17,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class DocumentSummarizer {
 
-    private final ChatLanguageModel chatLanguageModel;
+    private final LlmClient llmClient;
     private final PromptTemplateService promptTemplateService;
     private final RagProperties ragProperties;
 
@@ -41,8 +38,8 @@ public class DocumentSummarizer {
                 .replace("{{category}}", category)
                 .replace("{{docText}}", docContext);
         try {
-            String summary = chatLanguageModel.generate(List.of(UserMessage.from(prompt)))
-                    .content().text().strip();
+            // One summary per document — no extra gap beyond the shared global timeline.
+            String summary = llmClient.generate(prompt, 0);
             if (!summary.isBlank()) {
                 log.info("RAPTOR: summary generated ({} chars)", summary.length());
             }

@@ -1,6 +1,6 @@
-package com.simon.rag.service.impl;
+package com.simon.rag.service.retrieval.query;
 
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import com.simon.rag.llm.LlmClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class MultiQueryExpander {
 
-    private final ChatLanguageModel chatLanguageModel;
+    private final LlmClient llmClient;
 
     @Value("${rag.multi-query.enabled:false}")
     private boolean enabled;
@@ -36,7 +36,8 @@ public class MultiQueryExpander {
     public List<String> expand(String question) {
         if (!enabled) return List.of(question);
         try {
-            String response = chatLanguageModel.generate(String.format(PROMPT, question));
+            // Hot path (chat latency): gap 0 — no extra wait beyond the shared timeline.
+            String response = llmClient.generate(String.format(PROMPT, question), 0);
 
             List<String> variants = Arrays.stream(response.split("\n"))
                     .map(String::trim)

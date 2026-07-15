@@ -1,38 +1,30 @@
 package com.simon.rag.service.impl;
 
-import com.simon.rag.comm.constant.CacheConstant;
-import com.simon.rag.comm.enums.IntentTag;
-import com.simon.rag.comm.enums.QuestionType;
+import com.simon.rag.service.cache.RedisCacheService;
+import com.simon.rag.service.prompt.PromptBuilder;
+
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.vo.Vos;
 import com.simon.rag.model.eval.RerankedHit;
 import com.simon.rag.service.ChatService;
-import com.simon.rag.service.impl.QdrantSearchService.SearchHit;
+import com.simon.rag.llm.ClaudeBusyException;
+import com.simon.rag.llm.LlmClient;
+import com.simon.rag.service.retrieval.RetrievalResult;
+import com.simon.rag.service.retrieval.RetrievalService;
+import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.StreamingResponseHandler;
-import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
-import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.output.TokenUsage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.util.DigestUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -40,112 +32,31 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ChatServiceImpl implements ChatService {
 
-    private final EmbeddingModel embeddingModel;
-    private final QdrantSearchService qdrantSearchService;
-    private final ChatLanguageModel chatLanguageModel;
+    private final LlmClient llmClient;
     private final StreamingChatLanguageModel streamingChatLanguageModel;
     private final RagProperties ragProperties;
     private final PromptBuilder promptBuilder;
-    private final MultiQueryExpander multiQueryExpander;
     private final RedisCacheService redisCacheService;
-    private final CohereRerankService cohereRerankService;
-    private final SparseVectorizer sparseVectorizer;
-    private final QuestionClassifier questionClassifier;
-    private final QueryIntentClassifier queryIntentClassifier;
+    private final RetrievalService retrievalService;
 
     @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
     private String modelName;
 
-    @Value("${claude.rate-limit-ms:3000}")
-    private long claudeRateLimitMs;
-    private final AtomicLong lastClaudeCall = new AtomicLong(0);
-
+    // ── User-facing copy ────────────────────────────────────────────
     private static final String SESSION_LIMIT_MESSAGE =
             "You've reached the question limit for this session. Please refresh the page to start a new conversation.";
+    private static final String NO_HITS_MESSAGE =
+            "I don't have specific information about that in my knowledge base. "
+                    + "Please try rephrasing your question.";
+    private static final String TIMEOUT_MESSAGE =
+            "TBot is taking longer than expected. Please try again.";
+    private static final String OVERLOADED_MESSAGE =
+            "TBot is a bit overloaded right now — please try again in a moment.";
+    private static final String GENERIC_ERROR_MESSAGE =
+            "Something went wrong — please try again.";
 
-    /**
-     * Shared result of the pre-LLM pipeline steps (gate checks + retrieval).
-     * earlyReturn is non-null when the request should be answered without hitting the LLM or Qdrant.
-     */
-    record RetrievalResult(
-            QuestionType questionType,
-            String earlyReturn,
-            String history,
-            List<SearchHit> candidates,
-            List<RerankedHit> ranked,
-            List<RerankedHit> hits,
-            String context,
-            String focusCompany,
-            long retrieveMs,
-            long rerankMs,
-            String strategyName
-    ) {
-        boolean hasEarlyReturn() {
-            return earlyReturn != null;
-        }
-
-        boolean noHits() {
-            return hits != null && hits.isEmpty();
-        }
-    }
-
-    /**
-     * Pre-LLM retrieval pipeline shared by ask(), askStream(), and EvalChatServiceImpl.
-     *
-     * Question
-     *   → Agent gate (INVALID/OUT_OF_SCOPE → early return)
-     *   → Query prep (history, focusCompany, queries, siblings)
-     *   → selectStrategy()
-     *       ├─ isMultiCompany?          → MULTI_COMPANY   (per-company retrieval, no rerank)
-     *       ├─ BEHAVIORAL / TECHNICAL   → BEHAVIORAL       (intent + hybrid + rerank w/ minScore)
-     *       ├─ FACTUAL + temporal?      → FACTUAL_TEMPORAL (retrieval only, no rerank)
-     *       ├─ FACTUAL + profile?       → FACTUAL_PROFILE  (retrieval only, no rerank)
-     *       └─ FACTUAL + experience?    → FACTUAL_EXPERIENCE (retrieval + rerankTopN, no minScore)
-     *   → strategy.execute(ctx) → List<RerankedHit>
-     *   → context assembly + coverage log
-     *   → RetrievalResult
-     */
-    RetrievalResult retrieve(String question, String sessionId) {
-
-        // 1. Agent Gate
-        QuestionType type = questionClassifier.classify(question);
-        String earlyReturn = questionClassifier.earlyReturnMessage(type, question);
-        if (earlyReturn != null) {
-            log.info("Agent gate early return: type={}", type);
-            return new RetrievalResult(type, earlyReturn, null, null,
-                    null, null, null, null, 0, 0, null);
-        }
-
-        // 2. Query Preparation
-        RagProperties.Embedding cfg = ragProperties.getEmbedding();
-        String history        = redisCacheService.getConversationHistory(sessionId);
-        String focusCompany   = promptBuilder.extractFocusCompany(question, history);
-        String retrievalQuery = resolveRetrievalQuery(question, history, focusCompany);
-        List<String> queries  = withSubProjectQueries(multiQueryExpander.expand(retrievalQuery), focusCompany);
-        List<String> siblings = getSiblingCompanies(focusCompany);
-
-        // 3. Strategy Selection + Execution
-        RetrievalContext ctx = new RetrievalContext(type, question, retrievalQuery, queries, focusCompany, siblings, cfg);
-        NamedStrategy strategy = selectStrategy(ctx);
-
-        long t0 = System.currentTimeMillis();
-        List<RerankedHit> hits = strategy.execute(ctx);
-        long t1 = System.currentTimeMillis();
-
-        // 4. Context Assembly + Coverage Log
-        String context = hits.stream()
-                .map(rh -> rh.hit().text())
-                .collect(Collectors.joining("\n\n---\n\n"));
-        Set<String> contextCompanies = hits.stream()
-                .flatMap(rh -> rh.hit().companies().stream())
-                .collect(Collectors.toSet());
-        log.info("[Chat] questionType={} strategy={} context_companies={} focusCompany={} hits={} q='{}'",
-                type, strategy.name(), contextCompanies, focusCompany, hits.size(),
-                question.length() > 80 ? question.substring(0, 80) + "…" : question);
-
-        return new RetrievalResult(type, null, history, null,
-                null, hits, context, focusCompany, t1 - t0, 0, strategy.name);
-    }
+    /** modelUsed marker for non-LLM (gate) responses. */
+    private static final String MODEL_RULE_BASED = "rule-based";
 
     // ----------------------------------------------------------------
     //  Synchronous — Postman / REST clients
@@ -157,42 +68,24 @@ public class ChatServiceImpl implements ChatService {
         log.info("RAG ask: '{}'", request.getQuestion());
 
         // 1. Cache check — disabled until production (rag.cache.enabled: false)
-        String cacheKey = CacheConstant.CHAT_CACHE_PREFIX
-                + DigestUtils.md5DigestAsHex(
-                (request.getSessionId() + ":" + request.getQuestion()).getBytes(StandardCharsets.UTF_8));
         if (ragProperties.getCache().isEnabled()) {
-            Vos.ChatResponse cached = redisCacheService.getChatCache(cacheKey, start);
+            Vos.ChatResponse cached = redisCacheService.getChatCache(
+                    request.getSessionId(), request.getQuestion(), start);
             if (cached != null) return cached;
         }
 
         // 2. Session limit gate
         if (redisCacheService.isSessionLimitReached(request.getSessionId())) {
-            return Vos.ChatResponse.builder()
-                    .answer(SESSION_LIMIT_MESSAGE)
-                    .sources(List.of())
-                    .modelUsed("rule-based")
-                    .latencyMs(System.currentTimeMillis() - start)
-                    .build();
+            return ruleBasedResponse(SESSION_LIMIT_MESSAGE, start);
         }
 
         // 3. Retrieval pipeline
-        RetrievalResult retrieval = retrieve(request.getQuestion(), request.getSessionId());
+        RetrievalResult retrieval = retrievalService.retrieve(request.getQuestion(), request.getSessionId());
         if (retrieval.hasEarlyReturn()) {
-            return Vos.ChatResponse.builder()
-                    .answer(retrieval.earlyReturn())
-                    .sources(List.of())
-                    .modelUsed("rule-based")
-                    .latencyMs(System.currentTimeMillis() - start)
-                    .build();
+            return ruleBasedResponse(retrieval.earlyReturn(), start);
         }
         if (retrieval.noHits()) {
-            return Vos.ChatResponse.builder()
-                    .answer("I don't have specific information about that in my knowledge base. "
-                            + "Please try rephrasing your question.")
-                    .sources(List.of())
-                    .modelUsed(modelName)
-                    .latencyMs(System.currentTimeMillis() - start)
-                    .build();
+            return modelResponse(NO_HITS_MESSAGE, List.of(), start);
         }
 
         // 4. Call Claude
@@ -200,40 +93,21 @@ public class ChatServiceImpl implements ChatService {
         try {
             String prompt = promptBuilder.build(request.getQuestion(), retrieval.context(),
                     retrieval.questionType(), retrieval.history(), retrieval.focusCompany(), retrieval.strategyName());
-            throttleClaudeCall();
-            Response<AiMessage> aiResponse = chatLanguageModel.generate(List.of(UserMessage.from(prompt)));
-            answer = aiResponse.content().text();
-            TokenUsage usage = aiResponse.tokenUsage();
-            if (usage != null) {
-                log.info("TOKEN sync — in={} out={} total={} | q='{}'",
-                        usage.inputTokenCount(), usage.outputTokenCount(), usage.totalTokenCount(),
-                        request.getQuestion().length() > 60
-                                ? request.getQuestion().substring(0, 60) + "..." : request.getQuestion());
-            }
+            LlmClient.LlmReply reply = llmClient.chat(prompt);
+            answer = reply.text();
+            logTokenUsage("sync", reply.tokenUsage(), request.getQuestion());
         } catch (Exception e) {
             log.error("Claude generate error", e);
-            return Vos.ChatResponse.builder()
-                    .answer(isQuotaError(e)
-                            ? "TBot is a bit overloaded right now — please try again in a moment."
-                            : "Something went wrong — please try again.")
-                    .sources(List.of())
-                    .modelUsed(modelName)
-                    .latencyMs(System.currentTimeMillis() - start)
-                    .build();
+            return modelResponse(errorMessage(e), List.of(), start);
         }
         redisCacheService.appendConversationHistory(
                 request.getSessionId(), request.getQuestion(), answer);
 
-        Vos.ChatResponse response = Vos.ChatResponse.builder()
-                .answer(answer)
-                .sources(toSources(retrieval.hits()))
-                .modelUsed(modelName)
-                .latencyMs(System.currentTimeMillis() - start)
-                .build();
+        Vos.ChatResponse response = modelResponse(answer, toSources(retrieval.hits()), start);
 
         // 5. Cache store
         if (ragProperties.getCache().isEnabled()) {
-            redisCacheService.putChatCache(cacheKey, response);
+            redisCacheService.putChatCache(request.getSessionId(), request.getQuestion(), response);
         }
 
         return response;
@@ -248,8 +122,7 @@ public class ChatServiceImpl implements ChatService {
         SseEmitter emitter = new SseEmitter(90_000L);
         emitter.onTimeout(() -> {
             try {
-                emitter.send(SseEmitter.event().name("error")
-                        .data("TBot is taking longer than expected. Please try again."));
+                emitter.send(SseEmitter.event().name("error").data(TIMEOUT_MESSAGE));
                 emitter.complete();
             } catch (Exception ignored) {
             }
@@ -257,28 +130,21 @@ public class ChatServiceImpl implements ChatService {
         try {
             // 1. Session limit gate
             if (redisCacheService.isSessionLimitReached(request.getSessionId())) {
-                emitter.send(SseEmitter.event().name("message").data(SESSION_LIMIT_MESSAGE));
-                emitter.send(SseEmitter.event().name("done").data("[DONE]"));
-                emitter.complete();
+                sendMessageAndDone(emitter, SESSION_LIMIT_MESSAGE);
                 return emitter;
             }
 
             // 2. Retrieval pipeline
-            RetrievalResult retrieval = retrieve(request.getQuestion(), request.getSessionId());
+            RetrievalResult retrieval = retrievalService.retrieve(request.getQuestion(), request.getSessionId());
             if (retrieval.hasEarlyReturn()) {
-                emitter.send(SseEmitter.event().name("message").data(retrieval.earlyReturn()));
-                emitter.send(SseEmitter.event().name("done").data("[DONE]"));
-                emitter.complete();
+                sendMessageAndDone(emitter, retrieval.earlyReturn());
                 return emitter;
             }
             log.info("Stream — {} hits after retrieval pipeline",
                     retrieval.hits() == null ? 0 : retrieval.hits().size());
 
             if (retrieval.noHits()) {
-                emitter.send(SseEmitter.event().name("message")
-                        .data("I don't have specific information about that in my knowledge base."));
-                emitter.send(SseEmitter.event().name("done").data("[DONE]"));
-                emitter.complete();
+                sendMessageAndDone(emitter, NO_HITS_MESSAGE);
                 return emitter;
             }
 
@@ -287,8 +153,8 @@ public class ChatServiceImpl implements ChatService {
             String question = request.getQuestion();
             String sessionId = request.getSessionId();
 
-            // 3. Call Claude (streaming)
-            throttleClaudeCall();
+            // 3. Call Claude (streaming) — shares the interactive throttle via the gateway
+            llmClient.throttleInteractive();
             streamingChatLanguageModel.generate(
                     promptBuilder.build(question, retrieval.context(), retrieval.questionType(),
                             retrieval.history(), retrieval.focusCompany(), retrieval.strategyName()),
@@ -310,12 +176,7 @@ public class ChatServiceImpl implements ChatService {
 
                         @Override
                         public void onComplete(Response<AiMessage> response) {
-                            TokenUsage usage = response.tokenUsage();
-                            if (usage != null) {
-                                log.info("TOKEN stream — in={} out={} total={} | q='{}'",
-                                        usage.inputTokenCount(), usage.outputTokenCount(), usage.totalTokenCount(),
-                                        question.length() > 60 ? question.substring(0, 60) + "..." : question);
-                            }
+                            logTokenUsage("stream", response.tokenUsage(), question);
                             redisCacheService.appendConversationHistory(
                                     sessionId, question, fullAnswer.toString());
                             try {
@@ -330,10 +191,7 @@ public class ChatServiceImpl implements ChatService {
                         public void onError(Throwable error) {
                             log.error("Claude streaming error", error);
                             try {
-                                String msg = isQuotaError(error)
-                                        ? "TBot is a bit overloaded right now — please try again in a moment."
-                                        : "Something went wrong on my end. Please try again.";
-                                emitter.send(SseEmitter.event().name("error").data(msg));
+                                emitter.send(SseEmitter.event().name("error").data(errorMessage(error)));
                                 emitter.complete();
                             } catch (Exception ex) {
                                 emitter.completeWithError(ex);
@@ -341,6 +199,13 @@ public class ChatServiceImpl implements ChatService {
                         }
                     });
 
+        } catch (ClaudeBusyException busy) {
+            log.warn("Stream rejected — Claude rate limit saturated");
+            try {
+                emitter.send(SseEmitter.event().name("error").data(OVERLOADED_MESSAGE));
+                emitter.complete();
+            } catch (Exception ignored) {
+            }
         } catch (Exception e) {
             log.error("askStream failed", e);
             emitter.completeWithError(e);
@@ -349,395 +214,43 @@ public class ChatServiceImpl implements ChatService {
     }
 
     // ----------------------------------------------------------------
-    //  Retrieval pipeline
+    //  Response helpers
     // ----------------------------------------------------------------
 
-    /**
-     * Candidate gathering only — caller applies rerank + company filter.
-     * Package-private so EvalChatServiceImpl (same package) can reuse the same code path.
-     */
-    List<SearchHit> retrieveCandidates(List<String> queries,
-                                       RagProperties.Embedding cfg, String focusCompany,
-                                       List<String> siblings, List<IntentTag> intentTags) {
-        RagProperties.Reranker rerankCfg = ragProperties.getReranker();
-        boolean useHybrid = ragProperties.getHybridSearch().isEnabled();
-        int fetchLimit = rerankCfg.isEnabled() ? rerankCfg.getCandidateK() : cfg.getTopK();
-
-        if (useHybrid) {
-            LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
-            for (String q : queries) {
-                float[] dense = embedQuestion(q);
-                SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(q);
-                if (!sparse.isEmpty()) {
-                    qdrantSearchService.hybridSearchWithIntentFilter(
-                                    dense, sparse, fetchLimit, focusCompany, intentTags)
-                            .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
-                } else {
-                    log.warn("Sparse vector empty for query '{}', using dense only", q);
-                    qdrantSearchService.search(dense, fetchLimit, cfg.getMinScore(), focusCompany)
-                            .forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
-                }
-            }
-            return new ArrayList<>(seen.values());
-        }
-        return multiSearch(queries, cfg, fetchLimit, focusCompany, siblings);
+    private Vos.ChatResponse ruleBasedResponse(String answer, long start) {
+        return Vos.ChatResponse.builder()
+                .answer(answer)
+                .sources(List.of())
+                .modelUsed(MODEL_RULE_BASED)
+                .latencyMs(System.currentTimeMillis() - start)
+                .build();
     }
 
-    /**
-     * For multi-company questions: run one targeted search per known company
-     * (2 chunks each) instead of a single global search.
-     * Guarantees every company is represented in the candidate pool going into rerank.
-     */
-    private List<SearchHit> retrieveCandidatesPerCompany(String primaryQuery,
-                                                         RagProperties.Embedding cfg,
-                                                         List<IntentTag> intentTags) {
-        LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
-        int perCompanyLimit = 2;
-
-        for (String company : ragProperties.getCompanies()) {
-            float[] dense = embedQuestion(primaryQuery);
-            SparseVectorizer.SparseVector sparse = sparseVectorizer.vectorize(primaryQuery);
-
-            List<SearchHit> companyHits = (!sparse.isEmpty() && ragProperties.getHybridSearch().isEnabled())
-                    ? qdrantSearchService.hybridSearchWithIntentFilter(dense, sparse, perCompanyLimit, company, intentTags)
-                    : qdrantSearchService.search(dense, perCompanyLimit, cfg.getMinScore(), company);
-
-            companyHits.forEach(h -> seen.putIfAbsent(h.docId() + ":" + h.chunkIndex(), h));
-        }
-
-        log.info("[MultiCompany] Per-company retrieval: {} candidates across {} companies",
-                seen.size(), ragProperties.getCompanies().size());
-        return new ArrayList<>(seen.values());
+    private Vos.ChatResponse modelResponse(String answer, List<Vos.SourceChunk> sources, long start) {
+        return Vos.ChatResponse.builder()
+                .answer(answer)
+                .sources(sources)
+                .modelUsed(modelName)
+                .latencyMs(System.currentTimeMillis() - start)
+                .build();
     }
 
-    /**
-     * Company-scoped post-filter on reranked hits.
-     * Package-private for EvalChatServiceImpl reuse.
-     */
-    List<RerankedHit> applyCompanyFilter(List<RerankedHit> ranked,
-                                         String focusCompany, List<String> siblings) {
-        if (focusCompany == null) return ranked;
-        Set<String> allowed = buildAllowedCompanies(focusCompany, siblings);
-        return ranked.stream()
-                .filter(rh -> {
-                    List<String> cos = rh.hit().companies();
-                    if (cos.isEmpty()) return true;
-                    if (cos.stream().noneMatch(c -> c.equalsIgnoreCase(focusCompany))) return false;
-                    return cos.stream().allMatch(
-                            c -> allowed.stream().anyMatch(a -> a.equalsIgnoreCase(c)));
-                })
-                .collect(Collectors.toList());
+    private void sendMessageAndDone(SseEmitter emitter, String message) throws java.io.IOException {
+        emitter.send(SseEmitter.event().name("message").data(message));
+        emitter.send(SseEmitter.event().name("done").data("[DONE]"));
+        emitter.complete();
     }
 
-    /**
-     * Embeds each query, searches Qdrant, merges by (docId:chunkIndex).
-     * First occurrence wins (highest score), sorted desc, capped at limit.
-     */
-    private List<SearchHit> multiSearch(List<String> queries, RagProperties.Embedding cfg,
-                                        int limit, String focusCompany, List<String> siblings) {
-        LinkedHashMap<String, SearchHit> seen = new LinkedHashMap<>();
-        for (String query : queries) {
-            float[] vector = embedQuestion(query);
-            qdrantSearchService.search(vector, limit, cfg.getMinScore(), focusCompany)
-                    .forEach(hit -> seen.putIfAbsent(hit.docId() + ":" + hit.chunkIndex(), hit));
-        }
-        return seen.values().stream()
-                .sorted(Comparator.comparingDouble(SearchHit::score).reversed())
-                .limit(limit)
-                .collect(Collectors.toList());
+    private String errorMessage(Throwable e) {
+        return (e instanceof ClaudeBusyException || llmClient.isQuotaError(e))
+                ? OVERLOADED_MESSAGE : GENERIC_ERROR_MESSAGE;
     }
 
-    // ----------------------------------------------------------------
-    //  Other helpers
-    // ----------------------------------------------------------------
-
-    /**
-     * When a follow-up question contains ambiguous pronouns (it/that/there/this/they/those),
-     * prefix the retrieval query with the last answer snippet from history.
-     * <p>
-     * Why answer, not question:
-     * The answer contains concrete entities (company names, system names, tech terms)
-     * that anchor the embedding to the right topic far better than the vague Q.
-     * <p>
-     * Example:
-     * history last A → "Insurance Portal System at Sinosig. Used Redis to cache credit checks..."
-     * question       → "How did you reduce cost in that system?"
-     * resolved       → "Insurance Portal System at Sinosig. Used Redis to cache credit checks...
-     * How did you reduce cost in that system?"
-     */
-    String resolveRetrievalQuery(String question, String history, String focusCompany) {
-        if (history == null || history.isBlank()) return question;
-
-        String lower = question.toLowerCase();
-        boolean hasAmbiguity =
-                lower.matches(".*(\\bit\\b|\\bthat\\b|\\bthere\\b|\\bthis\\b|\\bthey\\b|\\bthose\\b).*");
-        if (!hasAmbiguity) return question;
-
-        // Extract last Q and A from history
-        String lastQuestion = "";
-        String lastAnswer = "";
-        for (String line : history.split("\n")) {
-            String trimmed = line.trim();
-            if (trimmed.startsWith("Q: ")) lastQuestion = trimmed.substring(3).strip();
-            else if (trimmed.startsWith("A: ")) lastAnswer = trimmed.substring(3).strip();
-        }
-
-        // Prefer answer snippet — richer in concrete entities; fall back to last question
-        String context = !lastAnswer.isBlank()
-                ? lastAnswer.substring(0, Math.min(120, lastAnswer.length()))
-                : lastQuestion;
-
-        if (context.isBlank()) return question;
-
-        // If the context snippet doesn't carry a company name (e.g. "15 months."),
-        // prepend the focus company so the embedding anchors to the right topic.
-        if (focusCompany != null && !context.toLowerCase().contains(focusCompany.toLowerCase())) {
-            context = focusCompany + " " + context;
-        }
-
-        log.debug("Retrieval resolved — context: '{}' | question: '{}'", context, question);
-        return context + " " + question;
-    }
-
-    private float[] embedQuestion(String question) {
-        return embeddingModel
-                .embedAll(List.of(TextSegment.from(question)))
-                .content()
-                .get(0)
-                .vector();
-    }
-
-    /**
-     * Deloitte delivered two client projects (OCBC and Sanofi).
-     * When a question is about Deloitte, the original query alone scores
-     * OCBC chunks much higher than Sanofi chunks (different vocabulary).
-     * Adding explicit sub-project variants ensures both projects' chunks
-     * are retrievable via multi-search.
-     */
-    List<String> withSubProjectQueries(List<String> queries, String focusCompany) {
-        if (focusCompany == null) return queries;
-        List<String> subgroups = ragProperties.getCompanySubgroups()
-                .getOrDefault(focusCompany, List.of());
-        if (subgroups.isEmpty()) return queries;
-        String original = queries.get(0);
-        String pattern = "(?i)\\b" + java.util.regex.Pattern.quote(focusCompany) + "\\b";
-        List<String> expanded = new ArrayList<>(queries);
-        for (String sub : subgroups) {
-            String replaced = original.replaceAll(pattern, sub);
-            if (!replaced.equals(original)) expanded.add(replaced);
-        }
-        return expanded;
-    }
-
-    /**
-     * Returns the set of company labels that are "legitimate" for a given focus company.
-     * Includes: the focus company itself, its siblings (other sub-projects of the same parent),
-     * and any parent firm (e.g. Deloitte for OCBC/Sanofi).
-     * Any chunk carrying a label outside this set gets filtered out of retrieval results.
-     */
-    private Set<String> buildAllowedCompanies(String focusCompany, List<String> siblings) {
-        Set<String> allowed = new HashSet<>();
-        allowed.add(focusCompany);
-        allowed.addAll(siblings);
-        ragProperties.getCompanySubgroups().forEach((parent, subs) -> {
-            // Add parent firm when focusCompany is a sub-project (e.g. OCBC → Deloitte)
-            if (subs.contains(focusCompany)) allowed.add(parent);
-            // Add sub-projects when focusCompany is the parent (e.g. Deloitte → OCBC, Sanofi)
-            if (parent.equalsIgnoreCase(focusCompany)) allowed.addAll(subs);
-        });
-        return allowed;
-    }
-
-    /**
-     * Returns sibling sub-companies for a sub-project focusCompany.
-     * Siblings are part of the same parent group and are ALLOWED in the post-filter.
-     * e.g. focusCompany=OCBC → siblings=[Sanofi] (both are Deloitte sub-projects).
-     */
-    List<String> getSiblingCompanies(String focusCompany) {
-        if (focusCompany == null) return List.of();
-        return ragProperties.getCompanySubgroups().values().stream()
-                .filter(subs -> subs.contains(focusCompany))
-                .flatMap(java.util.Collection::stream)
-                .filter(c -> !c.equals(focusCompany))
-                .toList();
-    }
-
-    private void throttleClaudeCall() {
-        while (true) {
-            long prev = lastClaudeCall.get();
-            long now = System.currentTimeMillis();
-            long next = Math.max(now, prev + claudeRateLimitMs);
-            if (lastClaudeCall.compareAndSet(prev, next)) {
-                long waitMs = next - now;
-                if (waitMs > 0) {
-                    try {
-                        Thread.sleep(waitMs);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-                return;
-            }
-        }
-    }
-
-    private boolean isQuotaError(Throwable e) {
-        String msg = e.getMessage();
-        if (msg == null) return false;
-        String lower = msg.toLowerCase();
-        return lower.contains("quota") || lower.contains("credit")
-                || lower.contains("overload") || lower.contains("529")
-                || (lower.contains("rate") && lower.contains("limit"));
-    }
-
-    private static final List<String> TEMPORAL_SIGNALS = List.of(
-            "how long", "how many years", "how many months", "when did you join",
-            "when did you leave", "when did you start", "start date", "end date",
-            "tenure", "employment period", "work period", "duration"
-    );
-
-    private static final List<String> PROFILE_SIGNALS = List.of(
-            "notice period", "visa", "work rights", "nationality", "where are you from",
-            "how long in australia", "relocation", "contact preference", "salary",
-            "compensation", "package", "current situation",
-            "office location", "preferred location", "work location",
-            "where (would|do) you (like|want|prefer) to work",
-            "working mode", "preferred (working|work) mode",
-            "hybrid", "remote", "on.?site", "wfh",
-            "where are you based", "based in"
-    );
-
-    private boolean isTemporalQuestion(String question) {
-        String lower = question.toLowerCase();
-        return TEMPORAL_SIGNALS.stream().anyMatch(lower::contains);
-    }
-
-    private boolean isProfileQuestion(String question) {
-        String lower = question.toLowerCase();
-        return PROFILE_SIGNALS.stream().anyMatch(lower::contains);
-    }
-
-    // ----------------------------------------------------------------
-    //  Retrieval Strategy Pattern
-    // ----------------------------------------------------------------
-
-    /**
-     * Immutable context passed to every retrieval strategy.
-     * Built once in retrieve() and shared across strategy selection and execution.
-     */
-    private record RetrievalContext(
-            QuestionType questionType,
-            String question,
-            String retrievalQuery,
-            List<String> queries,
-            String focusCompany,
-            List<String> siblings,
-            RagProperties.Embedding embeddingCfg
-    ) {}
-
-    /**
-     * Named strategy wrapper — holds the strategy name for logging and a
-     * function reference to the actual execute method.
-     * Using a record keeps it immutable and avoids anonymous class boilerplate.
-     */
-    private record NamedStrategy(
-            String name,
-            java.util.function.Function<RetrievalContext, List<RerankedHit>> fn
-    ) {
-        List<RerankedHit> execute(RetrievalContext ctx) {
-            return fn.apply(ctx);
-        }
-    }
-
-    /**
-     * Factory: selects the appropriate retrieval strategy based on question
-     * type and content. Multi-company detection takes priority over QuestionType.
-     */
-    private NamedStrategy selectStrategy(RetrievalContext ctx) {
-        if (isMultiCompanyQuestion(ctx.question(), ctx.focusCompany()))
-            return new NamedStrategy("MULTI_COMPANY",   this::executeMultiCompany);
-
-        return switch (ctx.questionType()) {
-            case BEHAVIORAL, TECHNICAL, STRATEGIC ->
-                    new NamedStrategy("BEHAVIORAL",          this::executeBehavioral);
-            case FACTUAL ->
-                    selectFactualStrategy(ctx.question());
-            default ->
-                    new NamedStrategy("BEHAVIORAL",          this::executeBehavioral);
-        };
-    }
-
-    private NamedStrategy selectFactualStrategy(String question) {
-        if (isTemporalQuestion(question))
-            return new NamedStrategy("FACTUAL_TEMPORAL",  this::executeFactualNoRerank);
-        if (isProfileQuestion(question))
-            return new NamedStrategy("FACTUAL_PROFILE",   this::executeFactualNoRerank);
-        return     new NamedStrategy("FACTUAL_EXPERIENCE", this::executeFactualExperience);
-    }
-
-    /**
-     * BEHAVIORAL / TECHNICAL / STRATEGIC
-     * Intent classification → hybrid retrieval → Cohere rerank (with minScore cutoff)
-     */
-    private List<RerankedHit> executeBehavioral(RetrievalContext ctx) {
-        List<IntentTag> intents = queryIntentClassifier.classify(ctx.question());
-        log.info("[Strategy] BEHAVIORAL intents={}", intents);
-        List<SearchHit> candidates = retrieveCandidates(
-                ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), intents);
-        List<RerankedHit> ranked = cohereRerankService.rerank(ctx.retrievalQuery(), candidates);
-        return applyCompanyFilter(ranked, ctx.focusCompany(), ctx.siblings());
-    }
-
-    /**
-     * FACTUAL_EXPERIENCE — "What was your role at OCBC", "What tech stack did you use at Alipay"
-     * Retrieval + rerank but NO minScore cutoff (factual chunks score lower but are still correct).
-     */
-    private List<RerankedHit> executeFactualExperience(RetrievalContext ctx) {
-        List<SearchHit> candidates = retrieveCandidates(
-                ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), List.of());
-        List<RerankedHit> ranked = cohereRerankService.rerankTopN(ctx.retrievalQuery(), candidates);
-        return applyCompanyFilter(ranked, ctx.focusCompany(), ctx.siblings());
-    }
-
-    /**
-     * FACTUAL_TEMPORAL ("how long did you work at X") and FACTUAL_PROFILE (visa, notice period)
-     * No rerank — BM25 keyword matching on timeline/profile chunks is more reliable than
-     * Cohere's cross-encoder for factual date/logistics content.
-     */
-    private List<RerankedHit> executeFactualNoRerank(RetrievalContext ctx) {
-        List<SearchHit> candidates = retrieveCandidates(
-                ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), List.of());
-        return candidates.stream()
-                .map(h -> new RerankedHit(h, h.score()))
-                .limit(ragProperties.getReranker().getTopN())
-                .collect(Collectors.toList());
-    }
-
-    /**
-     * MULTI_COMPANY — "past few jobs", "career highlights", "key contribution across companies"
-     * Per-company retrieval guarantees each company is represented in the candidate pool.
-     * No global rerank — cross-company reranking biases toward the company with
-     * the richest vocabulary match. Diversity enforced by construction.
-     */
-    private List<RerankedHit> executeMultiCompany(RetrievalContext ctx) {
-        // Detect if behavioral themed — use intent tags for per-company retrieval
-        // so companies without relevant behavioral content naturally score lower
-        List<IntentTag> intents = isBehavioralThemed(ctx.question())
-                ? queryIntentClassifier.classify(ctx.question())
-                : List.of();
-
-        List<SearchHit> candidates = retrieveCandidatesPerCompany(
-                ctx.queries().get(0), ctx.embeddingCfg(), intents);
-
-        List<RerankedHit> hits = candidates.stream()
-                .map(h -> new RerankedHit(h, h.score()))
-                .collect(Collectors.toList());
-        return enforceCompanyDiversity(hits, candidates);
-    }
-
-    private boolean isBehavioralThemed(String question) {
-        String lower = question.toLowerCase();
-        return AnswerFormatResolver.BEHAVIORAL_THEMES.stream().anyMatch(lower::contains);
+    private void logTokenUsage(String tag, TokenUsage usage, String question) {
+        if (usage == null) return;
+        log.info("TOKEN {} — in={} out={} total={} | q='{}'", tag,
+                usage.inputTokenCount(), usage.outputTokenCount(), usage.totalTokenCount(),
+                question.length() > 60 ? question.substring(0, 60) + "..." : question);
     }
 
     private List<Vos.SourceChunk> toSources(List<RerankedHit> hits) {
@@ -760,70 +273,5 @@ public class ChatServiceImpl implements ChatService {
                             .build();
                 })
                 .collect(Collectors.toList());
-    }
-
-    // ----------------------------------------------------------------
-    //  Multi-company diversity
-    // ----------------------------------------------------------------
-
-    private static final List<String> MULTI_COMPANY_SIGNALS = List.of(
-            "past few jobs", "past jobs", "each company", "all companies",
-            "throughout your career", "across your career", "all your experience",
-            "different companies", "career highlight", "career journey",
-            "walk me through your career", "every company", "all roles"
-    );
-
-    /**
-     * Returns true when the question spans the full career (no specific company in focus).
-     * Only fires when focusCompany is null — if a company is detected, normal scoped
-     * retrieval is already correct.
-     */
-    private boolean isMultiCompanyQuestion(String question, String focusCompany) {
-        if (focusCompany != null) return false;
-        String lower = question.toLowerCase();
-        return MULTI_COMPANY_SIGNALS.stream().anyMatch(lower::contains);
-    }
-
-    /**
-     * Ensures each known company has at least one chunk in the final context.
-     * Iterates allCandidates (full reranked list before company filter) and appends
-     * the best-scored chunk for any company not yet represented in hits.
-     */
-    private List<RerankedHit> enforceCompanyDiversity(List<RerankedHit> hits,
-                                                      List<SearchHit> allCandidates) {
-        Set<String> covered = hits.stream()
-                .flatMap(rh -> rh.hit().companies().stream())
-                .map(String::toLowerCase)
-                .collect(Collectors.toSet());
-
-        Set<String> missing = ragProperties.getCompanies().stream()
-                .map(String::toLowerCase)
-                .filter(c -> !covered.contains(c))
-                .collect(Collectors.toSet());
-
-        if (missing.isEmpty()) {
-            log.debug("[Diversity] All companies covered: {}", covered);
-            return hits;
-        }
-
-        List<RerankedHit> result = new ArrayList<>(hits);
-
-        for (String missingCompany : missing) {
-            allCandidates.stream()
-                    .filter(h -> h.companies().stream()
-                            .anyMatch(c -> c.equalsIgnoreCase(missingCompany)))
-                    .filter(h -> result.stream().noneMatch(existing ->
-                            existing.hit().docId().equals(h.docId()) &&
-                                    existing.hit().chunkIndex() == h.chunkIndex()))
-                    .findFirst()
-                    .ifPresent(h -> {
-                        result.add(new RerankedHit(h, h.score()));  // ← 包装成 RerankedHit
-                        log.info("[Diversity] Added '{}' chunk from raw candidates (score={})",
-                                missingCompany, h.score());
-                    });
-        }
-
-        log.info("[Diversity] hits {} → {} | missing was: {}", hits.size(), result.size(), missing);
-        return result;
     }
 }
