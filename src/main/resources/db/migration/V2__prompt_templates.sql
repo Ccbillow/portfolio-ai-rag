@@ -3,7 +3,6 @@
 -- Full DROP + RECREATE — always reflects the latest canonical version.
 -- ================================================================
 
-USE rag_db;
 
 DROP TABLE IF EXISTS prompt_template;
 

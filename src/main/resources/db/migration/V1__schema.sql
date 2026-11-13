@@ -1,14 +1,8 @@
 -- ================================================================
 -- RAG Knowledge Assistant — Database Schema
--- Auto-executed by MySQL Docker container on first boot.
--- File location: docker/mysql/init/01-schema.sql
+-- Flyway migration V1 — applied by the application at startup.
 -- ================================================================
 
-CREATE DATABASE IF NOT EXISTS rag_db
-    DEFAULT CHARACTER SET utf8mb4
-    DEFAULT COLLATE utf8mb4_unicode_ci;
-
-USE rag_db;
 
 -- ----------------------------------------------------------------
 -- sys_user — authentication and authorization
