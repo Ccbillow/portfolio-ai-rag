@@ -32,7 +32,6 @@ services:
       - "3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
       - ./docker/mysql/conf/my.cnf:/etc/mysql/conf.d/my.cnf:ro
     networks:
       - rag-net

@@ -6,7 +6,8 @@ import com.simon.rag.service.prompt.PromptBuilder;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.vo.Vos;
-import com.simon.rag.model.eval.RerankedHit;
+import com.simon.rag.service.retrieval.RerankedHit;
+import com.simon.rag.service.ChatHistoryRecorder;
 import com.simon.rag.service.ChatService;
 import com.simon.rag.llm.ClaudeBusyException;
 import com.simon.rag.llm.LlmClient;
@@ -25,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -38,6 +40,7 @@ public class ChatServiceImpl implements ChatService {
     private final PromptBuilder promptBuilder;
     private final RedisCacheService redisCacheService;
     private final RetrievalService retrievalService;
+    private final ChatHistoryRecorder chatHistoryRecorder;
 
     @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
     private String modelName;
@@ -82,9 +85,13 @@ public class ChatServiceImpl implements ChatService {
         // 3. Retrieval pipeline
         RetrievalResult retrieval = retrievalService.retrieve(request.getQuestion(), request.getSessionId());
         if (retrieval.hasEarlyReturn()) {
+            chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(),
+                    retrieval.earlyReturn(), List.of(), MODEL_RULE_BASED, System.currentTimeMillis() - start);
             return ruleBasedResponse(retrieval.earlyReturn(), start);
         }
         if (retrieval.noHits()) {
+            chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(),
+                    NO_HITS_MESSAGE, List.of(), MODEL_RULE_BASED, System.currentTimeMillis() - start);
             return modelResponse(NO_HITS_MESSAGE, List.of(), start);
         }
 
@@ -102,6 +109,8 @@ public class ChatServiceImpl implements ChatService {
         }
         redisCacheService.appendConversationHistory(
                 request.getSessionId(), request.getQuestion(), answer);
+        chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(), answer,
+                retrieval.hits(), modelName, System.currentTimeMillis() - start);
 
         Vos.ChatResponse response = modelResponse(answer, toSources(retrieval.hits()), start);
 
@@ -119,8 +128,15 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public SseEmitter askStream(Dtos.ChatRequest request) {
+        long start = System.currentTimeMillis();
         SseEmitter emitter = new SseEmitter(90_000L);
+        // Set once the client is gone or the emitter is finished. LangChain4j 0.35 cannot cancel
+        // the LLM stream, so the handler just stops sending and skips history (real cancel needs LangChain4j 1.x).
+        AtomicBoolean closed = new AtomicBoolean(false);
+        emitter.onCompletion(() -> closed.set(true));
+        emitter.onError(e -> closed.set(true));
         emitter.onTimeout(() -> {
+            closed.set(true);
             try {
                 emitter.send(SseEmitter.event().name("error").data(TIMEOUT_MESSAGE));
                 emitter.complete();
@@ -138,6 +154,8 @@ public class ChatServiceImpl implements ChatService {
             RetrievalResult retrieval = retrievalService.retrieve(request.getQuestion(), request.getSessionId());
             if (retrieval.hasEarlyReturn()) {
                 sendMessageAndDone(emitter, retrieval.earlyReturn());
+                chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(),
+                        retrieval.earlyReturn(), List.of(), MODEL_RULE_BASED, System.currentTimeMillis() - start);
                 return emitter;
             }
             log.info("Stream — {} hits after retrieval pipeline",
@@ -145,6 +163,8 @@ public class ChatServiceImpl implements ChatService {
 
             if (retrieval.noHits()) {
                 sendMessageAndDone(emitter, NO_HITS_MESSAGE);
+                chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(),
+                        NO_HITS_MESSAGE, List.of(), MODEL_RULE_BASED, System.currentTimeMillis() - start);
                 return emitter;
             }
 
@@ -160,25 +180,30 @@ public class ChatServiceImpl implements ChatService {
                             retrieval.history(), retrieval.focusCompany(), retrieval.strategyName()),
                     new StreamingResponseHandler<AiMessage>() {
                         private final StringBuilder fullAnswer = new StringBuilder();
+                        private final SseTokenNormalizer normalizer = new SseTokenNormalizer();
 
                         @Override
                         public void onNext(String token) {
+                            if (closed.get()) return;
                             fullAnswer.append(token);
+                            String sent = normalizer.normalize(token);
+                            if (sent.isEmpty()) return;
                             try {
-                                // Paragraph breaks → \\n\\n (frontend renders as blank line)
-                                // Single newlines → space (prevents word concatenation in frontend HTML)
-                                String sent = token.replace("\n\n", "\\n\\n").replace("\n", " ");
                                 emitter.send(SseEmitter.event().name("message").data(sent));
                             } catch (Exception e) {
+                                closed.set(true);
                                 emitter.completeWithError(e);
                             }
                         }
 
                         @Override
                         public void onComplete(Response<AiMessage> response) {
+                            if (closed.get()) return;
                             logTokenUsage("stream", response.tokenUsage(), question);
                             redisCacheService.appendConversationHistory(
                                     sessionId, question, fullAnswer.toString());
+                            chatHistoryRecorder.record(sessionId, question, fullAnswer.toString(),
+                                    retrieval.hits(), modelName, System.currentTimeMillis() - start);
                             try {
                                 emitter.send(SseEmitter.event().name("done").data("[DONE]"));
                                 emitter.complete();
@@ -190,6 +215,7 @@ public class ChatServiceImpl implements ChatService {
                         @Override
                         public void onError(Throwable error) {
                             log.error("Claude streaming error", error);
+                            if (closed.get()) return;
                             try {
                                 emitter.send(SseEmitter.event().name("error").data(errorMessage(error)));
                                 emitter.complete();

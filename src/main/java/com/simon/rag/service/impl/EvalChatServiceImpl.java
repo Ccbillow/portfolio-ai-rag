@@ -8,7 +8,7 @@ import com.simon.rag.model.eval.EvalResult;
 import com.simon.rag.model.eval.EvalResult.HitDetail;
 import com.simon.rag.model.eval.EvalResult.StageLatency;
 import com.simon.rag.model.eval.EvalResult.TokenStat;
-import com.simon.rag.model.eval.RerankedHit;
+import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.EvalChatService;
 import com.simon.rag.llm.LlmClient;
 import com.simon.rag.service.retrieval.RetrievalResult;

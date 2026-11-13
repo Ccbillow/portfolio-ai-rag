@@ -51,7 +51,7 @@
 ## ✅ Phase 7 — Prompt Management
 
 - MySQL table: `prompt_template`; hot-reload via admin API (no redeploy needed)
-- **Rule-based Agent Layer** `QuestionClassifier`: INVALID / OUT_OF_SCOPE / STRATEGIC / FACTUAL / TECHNICAL / BEHAVIORAL — zero LLM cost
+- **Rule-based  Intent Router** `QuestionClassifier`: INVALID / OUT_OF_SCOPE / STRATEGIC / FACTUAL / TECHNICAL / BEHAVIORAL — zero LLM cost
 - Type-specific prompt hints injected at runtime by classifier output
 
 ---
@@ -84,7 +84,7 @@ Ingestion
 - Contextual Retrieval: Claude-generated context prefix prepended to each chunk at index time; improves dense embedding quality;
 - Contextual Retrieval parallelization: `CompletableFuture` + `Semaphore(3)` replaces sequential per-chunk Claude calls; reduces ingestion wall-clock time
 - Semantic chunking: replaced fixed character splitter with paragraph-aware splitter; falls back to sentence boundaries for oversized paragraphs; prevents mid-sentence cuts
-- **RAPTOR document summary**: one Claude-generated summary chunk per document at ingest time (`chunkType=document_summary`); improves recall for broad questions
+- **Document-level summary**: one Claude-generated summary chunk per document at ingest time (`chunkType=document_summary`); improves recall for broad questions
 
 Retrieval
 
@@ -124,44 +124,74 @@ Evolved chunking from naive fixed-size -> simple text splitting -> retrieval-ori
 
 ---
 
-## 🔜 Phase 14 — Observability
+## ✅ Phase 14 — Engineering Hardening
 
-- Structured JSON logging: `sessionId`, `questionType`, `focusCompany`, `numHits`, `rerankScores`, `latencyMs`
-- Prometheus + Grafana: retrieval hit rate, rerank score distribution, LLM latency p50/p95; add containers to existing Docker Compose
+- **Tests + CI**: unit tests for the retrieval core; run on push / PR
+- **Flyway**: versioned schema and prompt-template migrations
+- **Chat history**: persist Q&A, latency, source doc IDs
+- **SSE fixes**: split `\n\n` tokens; stop on client disconnect
 
 ---
 
-## 🔜 Phase 15 — Admin Dashboard
+## 🔜 Phase 15 — Eval Quantification
 
-Knowledge Base
-- Document list: upload, status (pending/processing/failed/completed), retry on failure
-- Document detail: chunk count, company tags, file metadata
-- Delete document
+- **Retrieval metrics**: gold chunk labels; Recall@k, MRR, hit rate per strategy
+- **Ablation table**: dense → hybrid → +rerank → +intent boost
+- **Generation metrics**: judge scores groundedness / completeness on all cases
+- **CI gate**: unit tests + classifier eval on PR
 
-Prompt Management
-- View and inline-edit all prompt templates (API already exists, UI only)
-- Hot-reload without restart
+---
 
-Token Usage
-- Per-day API token cost tracking (OpenAI + Cohere/Haiku); requires new MySQL table
+## 🔜 Phase 16 — Resilience & Guardrails
+
+- **Rerank fallback**: Cohere failure → answer from RRF order
+- **Daily budget cap**: global token counter in Redis
+- **Injection defense**: system / user split, delimited context, adversarial eval cases
+
+---
+
+## 🔜 Phase 17 — Observability
+
+- **Structured JSON logging**: `traceId`, strategy, hits, latency
+- **LLM tracing**: Langfuse; one span per stage with latency and tokens
+
+---
+
+## 🔜 Phase 18 — Answer Quality & Routing
+
+- **Failure triage**: label bad answers as routing / retrieval / generation; fix the top categories
+- **Hybrid routing**: rules first, LLM classifier as fallback
+- **Model upgrade**: Haiku 4.5 → 5.5 if the eval set doesn't regress
+
+---
+
+## 🧭 Phase 19 — Agentic RAG (designed, not implemented)
+
+- **Why an agent**: retry weak retrieval, decompose multi-hop questions, query MySQL and vectors as tools
+- **Why not now**: 2–4 LLM calls per question; harder to evaluate; larger injection surface
+- **Minimal design**: LangChain4j 1.x tool calling; agent only for multi-hop / comparison, workflow as fallback
 
 ---
 
 ## Backlog
 
-- Redis-backed rate limiting (required for multi-instance scale-out)
+- [Admin Dashboard] Document list / detail / delete / retry; prompt template view + inline edit
+- [Admin Dashboard] Baseline eval runner (persist runs in MySQL) and eval diff UI
 - [Ingestion] Document versioning: re-upload replaces old chunks automatically
 - [Ingestion] Duration queries: extract tenure dates from MySQL structured fields, append to context
 - [Retrieval] Semantic answer caching (embedding similarity, not MD5)
 - [Generation] Multi-company comparison: detect "compare X vs Y", run two scoped retrieval pipelines, merge contexts
+- [Generation] `CONCEPTUAL` question type; replace prompt rule lists with few-shot examples (only if Phase 18 triage supports it)
+- [Generation] True stream cancellation on client disconnect (needs LangChain4j 1.x)
 - [Evaluation] Thumbs up/down feedback; stored in MySQL for retrieval quality analysis
-- [Evaluation] CI gate: run smoke test on PR via GitHub Actions, block merge on failure
-- [Evaluation] Baseline eval runner: trigger from `Admin Dashboard`, persist run results in MySQL
-- [Evaluation] Eval diff UI: select two baseline runs, visualize regression/improvement in `Admin Dashboard`
 - [Frontend] Source chunk expander: click source chip to view full chunk text
 
-**High cost — skip for now:**
+**Not planned:**
 
 - [Retrieval] HyDE: LLM generates a hypothetical answer first, embed that for retrieval
-- [Retrieval] Dual index / multi-path recall: separate dense + sparse indexes, merge client-side (Qdrant RRF already covers this)
-- [Routing] Advanced routing: LLM Classifier / Ambiguity Detection
+- [Retrieval] Dual index / multi-path recall: Qdrant RRF already covers this
+- [Retrieval] GraphRAG, multi-agent, fine-tuning, Kubernetes: no measurable benefit at this corpus size
+- [Cost] Prompt caching: ~1.6K tokens per request is likely below the minimum cacheable length
+- [Resilience] Redis-backed rate limiting, circuit breakers on every provider: single instance; a timeout + fallback on Cohere covers the real failure mode
+- [Observability] Micrometer + Prometheus / Grafana: Langfuse spans already give per-stage latency and token cost
+- [Agent] MCP server: no consumer for it

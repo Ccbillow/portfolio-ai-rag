@@ -11,6 +11,15 @@ spring:
       max-file-size: 5MB
       max-request-size: 10MB
 
+  flyway:
+    enabled: true
+    # An existing database (created by the old init scripts) is treated as already at V2,
+    # so prompts hot-edited through the admin API are never overwritten.
+    baseline-on-migrate: true
+    baseline-version: 2
+    # Prompt templates contain literal ${...}/{{...}} text — never treat it as a Flyway placeholder.
+    placeholder-replacement: false
+
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: Asia/Shanghai

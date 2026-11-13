@@ -1,0 +1,495 @@
+[
+  {
+    "id": "CT1",
+    "section": "contact",
+    "type": "GATE",
+    "question": "your contact",
+    "expectedType": "CONTACT_REDIRECT",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "download my resume"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "CT2",
+    "section": "contact",
+    "type": "GATE",
+    "question": "how do you want us to contact you",
+    "expectedType": "CONTACT_REDIRECT",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "download my resume"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "CT3",
+    "section": "contact",
+    "type": "GATE",
+    "question": "what is you preferred contact",
+    "expectedType": "CONTACT_REDIRECT",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "download my resume"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "CT4",
+    "section": "contact",
+    "type": "GATE",
+    "question": "when can you receive phone call",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 20,
+    "manualHint": "TIME AVAILABILITY — needs KB entry: \"available during business hours, weekdays 9am-5pm\". Currently falls back because no context exists."
+  },
+  {
+    "id": "CT5",
+    "section": "contact",
+    "type": "GATE",
+    "question": "what time are you available to have phone call?",
+    "expectedType": "FACTUAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 15,
+    "manualHint": "TIME AVAILABILITY — needs KB entry: \"available during business hours, weekdays 9am-5pm\". Currently falls back because no context exists."
+  },
+  {
+    "id": "CT6",
+    "section": "contact",
+    "type": "GATE",
+    "question": "can you give me your contact number or email address?",
+    "expectedType": "CONTACT_REDIRECT",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "download my resume"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "CT7",
+    "section": "contact",
+    "type": "GATE",
+    "question": "what is your contact numbder",
+    "expectedType": "CONTACT_REDIRECT",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "download my resume"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "CT8",
+    "section": "contact",
+    "type": "GATE",
+    "question": "what about emial?",
+    "expectedType": "CONTACT_REDIRECT",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "download my resume"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "CT9",
+    "section": "contact",
+    "type": "GATE",
+    "question": "what time is suitable for us to contact you?",
+    "expectedType": "FACTUAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 25,
+    "manualHint": "Asking about suitable TIME, not contact method. \"what time\" → FACTUAL."
+  },
+  {
+    "id": "CT10",
+    "section": "contact",
+    "type": "GATE",
+    "question": "can you provide me link?",
+    "expectedType": "CONTACT_REDIRECT",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "download my resume"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "RF1",
+    "section": "reference",
+    "type": "GATE",
+    "question": "Can you provide references from your previous jobs",
+    "expectedType": "STRATEGIC",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "great topic to explore"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "RF2",
+    "section": "reference",
+    "type": "GATE",
+    "question": "Do you have Australian reference?",
+    "expectedType": "STRATEGIC",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "great topic to explore"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "AU1",
+    "section": "australia_experience",
+    "type": "FACTUAL",
+    "question": "do you have Australis local working experience?",
+    "expectedType": "FACTUAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 25,
+    "manualHint": "Should mention casual/freelance work and English environment in Australia, not just 'no full-time IT experience'"
+  },
+  {
+    "id": "AU2",
+    "section": "australia_experience",
+    "type": "BEHAVIORAL",
+    "question": "why do you come to Australia",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 60,
+    "manualHint": "Should explain reasons for moving to Australia"
+  },
+  {
+    "id": "AU3",
+    "section": "australia_experience",
+    "type": "BEHAVIORAL",
+    "question": "why do you not have a full time job since 2024",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 80,
+    "manualHint": "Should mention visa as a key reason, not just networking/connections"
+  },
+  {
+    "id": "AU4",
+    "section": "australia_experience",
+    "type": "BEHAVIORAL",
+    "question": "what is your visa status",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 30,
+    "manualHint": "Direct visa question — should answer clearly"
+  },
+  {
+    "id": "AU5",
+    "section": "australia_experience",
+    "type": "BEHAVIORAL",
+    "question": "do you need relocation incentive?",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "maxWords": 35,
+    "manualHint": "Should answer about relocation needs"
+  },
+  {
+    "id": "AU6",
+    "section": "australia_experience",
+    "type": "BEHAVIORAL",
+    "question": "when can you commence on work?",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 35,
+    "manualHint": "Notice period / start date question"
+  },
+  {
+    "id": "EN1",
+    "section": "english_experience",
+    "type": "BEHAVIORAL",
+    "question": "tell me more about your working experience in english",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail",
+      "all my roles"
+    ],
+    "mustContain": [
+      "Deloitte"
+    ],
+    "maxWords": 80,
+    "manualHint": "Only Deloitte had English environment. Must NOT claim NetEase/Sinosig/Alipay used English."
+  },
+  {
+    "id": "LO1",
+    "section": "location_mode",
+    "type": "FACTUAL",
+    "question": "where is your preferred office location?",
+    "expectedType": "FACTUAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 20,
+    "manualHint": "Should answer with location flexibility"
+  },
+  {
+    "id": "LO2",
+    "section": "location_mode",
+    "type": "BEHAVIORAL",
+    "question": "what is your preferred working mode",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 35,
+    "manualHint": "Hybrid/remote/onsite preference"
+  },
+  {
+    "id": "LO3",
+    "section": "location_mode",
+    "type": "FACTUAL",
+    "question": "do you mind working at home",
+    "expectedType": "FACTUAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 20,
+    "manualHint": "WFH preference"
+  },
+  {
+    "id": "PR1",
+    "section": "personal",
+    "type": "GATE",
+    "question": "do you have children?",
+    "expectedType": "PERSONAL",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "outside what I can help"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "PR2",
+    "section": "personal",
+    "type": "BEHAVIORAL",
+    "question": "do you work overtime?",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 40,
+    "manualHint": "Work attitude — should answer honestly"
+  },
+  {
+    "id": "SK1",
+    "section": "skills_weakness",
+    "type": "GATE",
+    "question": "what is your shortcoming?",
+    "expectedType": "STRATEGIC",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "great topic to explore"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "SK2",
+    "section": "skills_weakness",
+    "type": "GATE",
+    "question": "what is your drawback?",
+    "expectedType": "STRATEGIC",
+    "isEarlyReturn": true,
+    "mustContain": [
+      "great topic to explore"
+    ],
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  },
+  {
+    "id": "SK3",
+    "section": "skills_weakness",
+    "type": "BEHAVIORAL",
+    "question": "what mistakes do you normally make at work?",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 70,
+    "manualHint": "STAR story about a mistake — should be concrete, not generic"
+  },
+  {
+    "id": "SK4",
+    "section": "skills_weakness",
+    "type": "BEHAVIORAL",
+    "question": "what is the most important skill for you",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 50,
+    "manualHint": "Should identify a concrete skill with evidence"
+  },
+  {
+    "id": "SK5",
+    "section": "skills_weakness",
+    "type": "BEHAVIORAL",
+    "question": "what is your main concern at work",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 40,
+    "manualHint": "Work values question"
+  },
+  {
+    "id": "TC1",
+    "section": "technical",
+    "type": "BEHAVIORAL",
+    "question": "tell me about your AI usage skill",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 90,
+    "checkHardStop": true,
+    "manualHint": "STAR format — 3 sentences, concrete AI tool/technique"
+  },
+  {
+    "id": "TC2",
+    "section": "technical",
+    "type": "BEHAVIORAL",
+    "question": "how can you contribute to a team?",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 60,
+    "manualHint": "Team contribution — should be specific"
+  },
+  {
+    "id": "TC3",
+    "section": "technical",
+    "type": "BEHAVIORAL",
+    "question": "what does AI mean to you?",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 50,
+    "manualHint": "AI philosophy — should be personal and concrete"
+  },
+  {
+    "id": "TC4",
+    "section": "technical",
+    "type": "BEHAVIORAL",
+    "question": "what is your understanding of AI learniung",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 50,
+    "manualHint": "AI learning understanding"
+  },
+  {
+    "id": "TC5",
+    "section": "technical",
+    "type": "BEHAVIORAL",
+    "question": "can you work for full stack",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 45,
+    "manualHint": "Full stack capability"
+  },
+  {
+    "id": "TC6",
+    "section": "technical",
+    "type": "FACTUAL",
+    "question": "How many years working exprience do you have?",
+    "expectedType": "FACTUAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 15,
+    "manualHint": "Factual — 1 sentence, ≤12 words. Just the number of years."
+  },
+  {
+    "id": "CM1",
+    "section": "communication",
+    "type": "BEHAVIORAL",
+    "question": "how do you communitcate with manager",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ],
+    "maxWords": 70,
+    "manualHint": "Communication style question"
+  },
+  {
+    "id": "CM2",
+    "section": "communication",
+    "type": "BEHAVIORAL",
+    "question": "what do you do when you do not agree with manager's instruction",
+    "expectedType": "BEHAVIORAL",
+    "isEarlyReturn": false,
+    "mustNotContain": [
+      "I do not have that detail"
+    ]
+  }
+]

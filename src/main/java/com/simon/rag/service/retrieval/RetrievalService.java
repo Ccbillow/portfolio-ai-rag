@@ -2,7 +2,6 @@ package com.simon.rag.service.retrieval;
 
 import com.simon.rag.comm.enums.QuestionType;
 import com.simon.rag.config.RagProperties;
-import com.simon.rag.model.eval.RerankedHit;
 import com.simon.rag.service.cache.ConversationHistory;
 import com.simon.rag.service.cache.RedisCacheService;
 import com.simon.rag.service.retrieval.query.MultiQueryExpander;
@@ -22,7 +21,7 @@ import java.util.stream.Collectors;
  *
  * <pre>
  * Question
- *   → Agent gate (INVALID/OUT_OF_SCOPE → early return)
+ *   → Rule gate (INVALID/OUT_OF_SCOPE → early return)
  *   → Query prep (history, focusCompany, queries, siblings)
  *   → strategy = selector.select(ctx)   (see retrieval.strategy)
  *   → strategy.retrieve(ctx) → List&lt;RerankedHit&gt;
@@ -44,11 +43,11 @@ public class RetrievalService {
 
     public RetrievalResult retrieve(String question, String sessionId) {
 
-        // 1. Agent Gate
+        // 1. Rule Gate
         QuestionType type = questionClassifier.classify(question);
         String earlyReturn = questionClassifier.earlyReturnMessage(type, question);
         if (earlyReturn != null) {
-            log.info("Agent gate early return: type={}", type);
+            log.info("Rule gate early return: type={}", type);
             return RetrievalResult.earlyReturn(type, earlyReturn);
         }
 

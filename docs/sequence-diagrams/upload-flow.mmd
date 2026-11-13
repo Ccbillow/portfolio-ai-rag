@@ -3,55 +3,56 @@ sequenceDiagram
     participant API as Spring Boot
     participant MySQL
     participant Redis
-    participant Claude as Claude Haiku
+    participant Claude as Claude Haiku 4.5
     participant OpenAI
     participant Qdrant
 
     Admin->>API: POST /api/documents/upload (ROLE_ADMIN)
 
-    API->>MySQL: Check duplicate (same filename, status != FAILED)
+    API->>MySQL: Duplicate check (same fileName, status != FAILED)
     alt Already exists
-        API-->>Admin: 200 skipped — no embedding cost
+        API-->>Admin: 200 skipped — no duplicate embedding cost
     end
 
-    API->>API: Save file to disk (filename = taskId UUID)
+    API->>API: Save temp file to disk (name = taskId UUID)
     API->>MySQL: INSERT status=PENDING, taskId
     API->>Redis: SET ingest task = PENDING (TTL 24h)
     API-->>Admin: 200 OK with taskId
 
-    Note over API: Background thread — rag-async-*
+    Note over API: Background — @Async("taskExecutor"), IngestionRunner
 
-    API->>API: Tika parse to plain text
-    API->>API: MarkdownHeadingChunkSplitter — split by ## / ### headings
+    API->>Redis: task = PROCESSING
+    API->>MySQL: status = PROCESSING
 
-    API->>API: Attach base metadata per chunk (docId, fileName, category, chunkIndex)
+    API->>API: TextExtractor — Tika parse to plain text
+    API->>API: ChunkSplitter — Markdown headings, fallback semantic (chunkSize~1000, overlap 150)
+    API->>API: Stamp base metadata (docId, fileName, category, chunkIndex, chunkTotal)
 
-    API->>Claude: ChunkMetadataEnricher — tag each chunk (parallel, global Semaphore(2), throttle 1500ms)
-    Note right of API: Extract intent_tags, behavioral_tags, chunk_type, project, skills.
-    Claude-->>API: Structured JSON per chunk
+    API->>Claude: ChunkMetadataEnricher — tag chunks in batches of 5 (parallel, throttled)
+    Claude-->>API: intent_tags, behavioral_tags, chunk_type, project, skills
 
-    API->>Claude: RAPTOR — generate document summary (1 call)
-    Claude-->>API: 4-6 sentence summary chunk (prepended, chunkType=document_summary)
+    API->>Claude: DocumentSummarizer (document-level summary) — 1 summary chunk (prepended at index 0)
+    Claude-->>API: document summary
 
-    API->>Claude: Contextual Retrieval — context prefix per chunk (parallel, Semaphore(3))
-    Note right of API: Each chunk gets a 1-2 sentence prefix describing, better for embedding.
-    Claude-->>API: Context prefix per chunk
+    opt Contextual Retrieval (disabled by default)
+        API->>Claude: Per-chunk context prefix (prepended before embedding)
+        Claude-->>API: context prefix
+    end
 
-    API->>OpenAI: Embed all chunks in batches of 100 (enriched text + context prefix)
+    API->>OpenAI: Embed all chunks in batches of 100 (text-embedding-3-small)
     OpenAI-->>API: float[1536] dense vectors
 
-    API->>API: BM25-IDF vectorize each chunk (in-process)
-    API->>API: Tag each chunk with company labels
-
-    API->>Qdrant: Upsert points — dense + sparse vectors + payload (incl. intent_tags, behavioral_tags)
+    API->>API: QdrantPointAssembler — BM25 sparse vectors + company tags + enrichment payload
+    API->>Qdrant: Upsert points (dense + sparse + payload)
     Qdrant-->>API: OK
 
-    API->>MySQL: UPDATE status=COMPLETED, chunk_count=N
-    API->>Redis: SET ingest task = COMPLETED
+    API->>MySQL: status = COMPLETED, chunk_count = N
+    API->>Redis: task = COMPLETED
     API->>API: Update IDF corpus (idf_corpus.json)
-    API->>API: Delete temp file from disk
 
     alt Any step fails
-        API->>MySQL: UPDATE status=FAILED
-        API->>Redis: SET ingest task = FAILED
+        API->>MySQL: status = FAILED, error_message (truncated 500 chars)
+        API->>Redis: task = FAILED
     end
+
+    Note over API: finally — delete temp file from disk

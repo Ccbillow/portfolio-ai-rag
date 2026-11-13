@@ -6,55 +6,25 @@ sequenceDiagram
 
     Browser->>API: question text
 
-    Note over API,QC: Phase 1 — Gate & Question Type
+    Note over API,QC: Phase 1 — Question type (rule-based regex, zero LLM cost)
     API->>QC: classify(question)
+    Note over QC: First match wins:<br/>INVALID → OUT_OF_SCOPE → STRATEGIC → CONTACT_REDIRECT →<br/>PERSONAL → FACTUAL → BEHAVIORAL_PRE → TECHNICAL → BEHAVIORAL (default)
 
-    QC->>QC: Check length — too short or bare word
-    alt INVALID
-        QC-->>API: earlyReturn — "Could you rephrase?"
+    alt Gate types — INVALID / OUT_OF_SCOPE / STRATEGIC / CONTACT_REDIRECT / PERSONAL
+        QC-->>API: earlyReturn message (no RAG cost)
         API-->>Browser: message + done
+    else Answerable — FACTUAL / BEHAVIORAL / TECHNICAL
+        QC-->>API: QuestionType (drives prompt mode + retrieval strategy)
     end
 
-    QC->>QC: Match OUT_OF_SCOPE pattern (weather / news / recipes...)
-    alt OUT_OF_SCOPE
-        QC-->>API: earlyReturn — "That's outside what I can help with."
-        API-->>Browser: message + done
-    end
-
-    QC->>QC: Match STRATEGIC pattern (salary / weaknesses / conflict...)
-    alt STRATEGIC
-        QC-->>API: earlyReturn — "Happy to discuss in our conversation."
-        API-->>Browser: message + done
-    end
-
-    QC->>QC: Match CONTACT pattern (phone / email / how to contact...)
-    alt CONTACT_REDIRECT
-        QC-->>API: earlyReturn — "Please download my resume."
-        API-->>Browser: message + done
-    end
-
-    QC->>QC: Match FACTUAL pattern (how long / when / where are you...)
-    alt FACTUAL
-        QC-->>API: FACTUAL — strict citation prompt
-    end
-
-    QC->>QC: Match BEHAVIORAL / TECHNICAL pattern
-    alt BEHAVIORAL / TECHNICAL
-        QC-->>API: BEHAVIORAL / TECHNICAL — STAR/story prompt
-    end
-
-    QC-->>API: BEHAVIORAL (default)
-
-    Note over API,QIC: Phase 2 — Retrieval Intent Tags (BEHAVIORAL / TECHNICAL only)
-    API->>QIC: classify(question) — rule-based keyword match first
-    QIC->>QIC: Match against 8 intent keywords
-    alt Keywords matched
-        QIC-->>API: 1-3 intent_tags from rules
+    Note over API,QIC: Phase 2 — Retrieval intent tags (BEHAVIORAL / TECHNICAL / STRATEGIC only)
+    API->>QIC: classify(question)
+    alt Keyword rules matched (8 intent groups)
+        QIC-->>API: 1-3 intent_tags
     else No keyword match
-        QIC->>QIC: LLM fallback — classify via Claude prompt
-        QIC-->>API: 1-3 intent_tags from LLM
+        QIC->>QIC: LLM fallback via Claude (returns [] on failure)
+        QIC-->>API: 1-3 intent_tags (or [])
     end
-
-    Note right of QIC: Intents: architecture, production_issue, leadership, delivery, technical_depth, ambiguity, conflict, growth
+    Note right of QIC: Intents: architecture, production_issue, leadership, delivery,<br/>technical_depth, ambiguity, conflict, growth
 
     API->>API: Continue to strategy selection → retrieval

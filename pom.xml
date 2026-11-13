@@ -88,6 +88,16 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<!-- Flyway — versioned schema + prompt-template migrations -->
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-mysql</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>com.baomidou</groupId>
 			<artifactId>mybatis-plus-spring-boot3-starter</artifactId>
@@ -144,14 +154,6 @@
 			<groupId>dev.langchain4j</groupId>
 			<artifactId>langchain4j-anthropic</artifactId>
 			<version>${langchain4j.version}</version>
-		</dependency>
-
-		<!-- In-memory store (unit tests only) -->
-		<dependency>
-			<groupId>dev.langchain4j</groupId>
-			<artifactId>langchain4j-embeddings-all-minilm-l6-v2</artifactId>
-			<version>${langchain4j.version}</version>
-			<scope>test</scope>
 		</dependency>
 
 		<!-- ======================================================== -->

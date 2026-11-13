@@ -1,6 +1,6 @@
 package com.simon.rag.service;
 
-import com.simon.rag.model.eval.RerankedHit;
+import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.retrieval.rerank.CohereRerankService;
 import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import org.junit.jupiter.api.Test;

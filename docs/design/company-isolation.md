@@ -2,140 +2,134 @@
 
 ## Why This Exists
 
-The knowledge base contains documents from multiple employers. Without isolation, an OCBC question can pull in Sanofi context (same Deloitte engagement), or a Deloitte question can miss sub-project content entirely. Company isolation ensures each question retrieves only the chunks that belong to its scope.
+The knowledge base holds documents from multiple employers. Without isolation an OCBC question
+can pull in unrelated context, or a Deloitte question can miss its sub-project content. Isolation
+scopes each question to the chunks that belong to it.
 
-The mechanism is fully config-driven — no company names or relationships are hardcoded in Java. A new user can replace the company list and subgroup config in `application.yml` and the same logic applies to their knowledge base.
-
----
-
-## Stage 1: Tagging at Ingestion
-
-When a document is uploaded, each chunk is tagged with a `companies[]` list before being stored in Qdrant.
-
-**How tags are derived:**
-
-```
-companies = union(
-  extractCompaniesFromText(fileName),   // scan the filename
-  extractCompaniesFromText(chunkText)   // scan the chunk body
-)
-```
-
-Both scans check against the configured company list (case-insensitive substring match). A chunk gets tagged with every company name that appears in either the filename or its text content.
-
-**Example:**
-
-| File | Chunk text mentions | Stored `companies[]` |
-|------|---------------------|----------------------|
-| `Deloitte-OCBC-project.pdf` | "OCBC Banking Portal" | `["Deloitte", "OCBC"]` |
-| `Deloitte-overview.pdf` | "OCBC and Sanofi projects" | `["Deloitte", "OCBC", "Sanofi"]` |
-| `Alipay-experience.pdf` | "distributed cache" (no company keyword) | `["Alipay"]` |
-
-Chunks with an empty `companies[]` are treated as shared/general content and are always included in retrieval.
-
-**Configuration:**
+The mechanism is **fully config-driven** — no company names or relationships are hardcoded in Java.
+Swap the company list and subgroup config in `application.yml` and the same logic applies to any
+knowledge base. "Company" is just a label; it can be any entity boundary (employer, client, product).
 
 ```yaml
 rag:
-  companies:
-    - Alipay
-    - Sinosig
-    - NetEase
-    - Deloitte
-    - OCBC
-    - Sanofi
+  companies: [Alipay, Sinosig, NetEase, Deloitte, OCBC, Sanofi]
+  company-subgroups:
+    Deloitte: [OCBC, Sanofi]      # parent → sub-projects
 ```
 
-Adding a new company requires only adding it here — no code change.
+Four layers enforce isolation: **tagging → focus detection → retrieval filtering → prompt-level guard.**
 
 ---
 
-## Stage 2: Focus Company Extraction at Query Time
+## Stage 1 · Tagging at Ingestion (`CompanyTagger`)
 
-Before retrieval, the system identifies which company the question is about.
+Each chunk gets a `companies[]` list before it is stored in Qdrant. Signals are merged by priority:
 
-**Scan order (stops at first match):**
+```
+1. markdown heading   (most reliable per-chunk signal)
+2. filename           (only if the heading yielded nothing)
+3. chunk text         (always scanned, merged in)
+4. parent derivation  (reverse-lookup company-subgroups)
+```
 
-1. Question text itself
-2. Recent conversation history — Q lines (most recent first)
-3. Recent conversation history — A lines (most recent first)
+All scans are case-insensitive substring matches against `rag.companies`. **Parent derivation** means a
+chunk tagged `[OCBC]` automatically also gets `[Deloitte]`, so parent-company searches find sub-project
+chunks without query expansion.
 
-The scan checks the same company list from config. If no match is found, `focusCompany` is null and no company filter is applied.
+| File / signal | Stored `companies[]` |
+|---------------|----------------------|
+| `Deloitte-OCBC-project.pdf`, text "OCBC Banking Portal" | `[OCBC, Deloitte]` |
+| text mentions "OCBC and Sanofi" | `[OCBC, Sanofi, Deloitte]` |
+| `Alipay-experience.pdf`, no other company keyword | `[Alipay]` |
 
-**Why scan history:** Follow-up questions often drop the company name. "What was the tech stack?" after discussing Alipay should still scope to Alipay.
+Chunks with empty `companies[]` are shared/general content.
 
 ---
 
-## Stage 3: Retrieval Filtering
+## Stage 2 · Focus Company Detection (`CompanyScopeResolver.extractFocusCompany`)
 
-Company filtering happens in two places.
+Identifies which company the question is about (stops at first match):
 
-### Pre-filter (Qdrant)
-
-Qdrant applies a `should` filter before vector search:
-
-```json
-{ "should": [
-    { "key": "companies", "match": { "any": ["OCBC"] } },
-    { "is_empty": { "key": "companies" } }
-]}
+```
+1. subsidiary named in question   (OCBC/Sanofi beat their parent Deloitte)
+2. any company named in question
+3. history — Q lines, newest first
+4. history — A lines, newest first
 ```
 
-This narrows the candidate pool to chunks that mention the focus company OR have no company tag (shared content). This runs inside Qdrant before RRF fusion — it's fast and reduces noise before reranking.
+No match ⇒ `focusCompany = null`, no company filter applied. Scanning history handles follow-ups that
+drop the name ("What was the tech stack?" after discussing Alipay stays scoped to Alipay). Questions are
+authoritative; answers are only a fallback.
 
-### Post-filter (Java, after rerank)
+---
 
-After Cohere reranking, a stricter allowlist filter runs in Java. A chunk is kept only if **all** of its company labels fall within `allowedCompanies`.
+## Stage 3 · Retrieval Filtering (two layers)
+
+### Pre-filter — inside Qdrant, before RRF fusion
+
+The company clause shape depends on whether query intents are present:
+
+- **No intents** (factual / dense-only): company is a soft `should` that also admits empty-company chunks.
+  ```json
+  { "should": [ {"key":"companies","match":{"any":["OCBC"]}}, {"is_empty":{"key":"companies"}} ] }
+  ```
+- **Intents present** (behavioral path): company is promoted to a hard `must`, and `intent_tags` become a
+  `should` scoring boost.
+  ```json
+  { "must": [ {"key":"companies","match":{"any":["OCBC"]}} ],
+    "should": [ {"key":"intent_tags","match":{"value":"leadership"}} ] }
+  ```
+
+### Post-filter — Java allowlist, after Cohere rerank
+
+Applied by the **BEHAVIORAL** and **FACTUAL_EXPERIENCE** strategies. A chunk is kept if it has no company,
+or it contains the focus company **and every one of its labels** is within:
 
 ```
 allowedCompanies = {focusCompany} ∪ siblings ∪ parent
 ```
 
-**Why this second filter is needed:** The Qdrant pre-filter keeps any chunk that contains the focus company. But a Deloitte overview chunk tagged `["Deloitte", "OCBC", "Sanofi"]` passes the OCBC pre-filter (it contains "OCBC"). The post-filter checks all labels — Sanofi is not in `allowedCompanies` for an OCBC query, so the chunk is dropped.
+**Why a second filter:** the pre-filter keeps any chunk that merely *mentions* the focus company —
+including a cross-company chunk tagged `[OCBC, Alipay]`. The post-filter drops it because `Alipay` is
+outside the allowed set, while a legitimate `[OCBC, Sanofi, Deloitte]` overview chunk survives (all labels
+allowed). Chunks that don't contain the focus company at all are also dropped.
+
+> MULTI_COMPANY enforces per-company diversity instead of this filter; FACTUAL_NO_RERANK relies on the
+> Qdrant pre-filter only.
 
 ---
 
-## Stage 4: Parent-Child Company Hierarchy
+## Stage 4 · Parent-Child Hierarchy
 
-Some companies are sub-projects of a parent. The hierarchy is declared in config:
-
-```yaml
-rag:
-  company-subgroups:
-    Deloitte:
-      - OCBC
-      - Sanofi
-```
-
-This drives how `allowedCompanies` is computed for each query:
+`company-subgroups` drives `allowedCompanies` — **siblings and parent are allowed, unrelated firms are not:**
 
 | Question scope | `allowedCompanies` | Effect |
-|---------------|-------------------|--------|
-| OCBC | `{OCBC, Deloitte}` | Includes Deloitte-tagged overview chunks; excludes Sanofi |
-| Sanofi | `{Sanofi, Deloitte}` | Includes Deloitte-tagged overview chunks; excludes OCBC |
-| Deloitte | `{Deloitte, OCBC, Sanofi}` | Includes all sub-project chunks |
-| Alipay | `{Alipay}` | No parent/sibling; strict single-company scope |
+|----------------|--------------------|--------|
+| OCBC | `{OCBC, Sanofi, Deloitte}` | sibling Sanofi + parent Deloitte allowed; Alipay/etc. dropped |
+| Sanofi | `{Sanofi, OCBC, Deloitte}` | sibling OCBC + parent Deloitte allowed |
+| Deloitte | `{Deloitte, OCBC, Sanofi}` | all sub-projects included |
+| Alipay | `{Alipay}` | no sibling/parent — strict single-company scope |
 
-**Adding a new parent-child relationship:**
+Adding a relationship is config-only:
 
 ```yaml
-rag:
-  company-subgroups:
-    NewParent:
-      - SubA
-      - SubB
+rag.company-subgroups:
+  NewParent: [SubA, SubB]
 ```
-
-No Java code changes required.
 
 ---
 
-## Multi-Tenant Design Intent
+## Stage 5 · Prompt-Level Guard
 
-The system is designed so that another user can run it against their own knowledge base by changing only the config:
+Final defense for mixed-label chunks that slip through: when a focus company is set, `PromptBuilder`
+injects a `companyContextHint` that names the topic company and **explicitly lists every other known
+company to ignore** — so even if unrelated content reaches the context, the LLM is told not to use it
+(details in `prompt-design.md`).
 
-1. Upload their own documents
-2. Set their company list in `rag.companies`
-3. Declare any parent-child relationships in `rag.company-subgroups`
+---
 
-The tagging logic, Qdrant filters, and post-rerank allowlist all read from config at runtime. The word "company" in the config is just a label — it can represent any entity boundary (employer, client, product line, department).
+## Multi-Tenant Intent
+
+Another user runs the system on their own data by changing config only: upload documents, set
+`rag.companies`, declare `rag.company-subgroups`. Tagging, Qdrant filters, the allowlist, and the prompt
+guard all read config at runtime.

@@ -2,130 +2,106 @@
 
 ## Overview
 
-Portfolio AI RAG is a production-deployed interview assistant that answers questions about my engineering background using Retrieval-Augmented Generation. Interviewers interact via a chat UI; the system retrieves relevant resume/project chunks from a vector store and generates grounded answers via Claude Haiku.
+Portfolio AI RAG is a production-deployed interview assistant that answers questions about my
+engineering background using Retrieval-Augmented Generation. Interviewers chat via a public UI; the
+system retrieves relevant resume/project chunks from a vector store and generates grounded answers via
+Claude Haiku. The backend is organized **package-by-feature** with a **Strategy pattern** at the
+retrieval core and a shared **LLM gateway** in front of Anthropic.
 
 ## Component Diagram
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                     Interviewer Browser               │
-└───────────────────────┬──────────────────────────────┘
-                        │ HTTPS
-                        ▼
-              ┌─────────────────┐
-              │   Nginx (443)   │  Reverse proxy, SSL termination
-              └────────┬────────┘
-                       │ HTTP :8080
-                       ▼
-        ┌──────────────────────────────┐
-        │     Spring Boot API          │
-        │  ┌────────────────────────┐  │
-        │  │  QuestionClassifier    │  │  Rule-based gate (0 LLM cost)
-        │  │  ChatServiceImpl       │  │  Orchestration
-        │  │  QdrantSearchService   │  │  Dense + hybrid search
-        │  │  SparseVectorizer      │  │  BM25 in-process
-        │  │  CohereRerankService   │  │  Cross-encoder reranking
-        │  │  PromptBuilder         │  │  Template + context assembly
-        │  │  RateLimitInterceptor  │  │  Bucket4j per-IP
-        │  └────────────────────────┘  │
-        └──┬───────────┬───────────────┘
-           │           │           │
-           ▼           ▼           ▼
-      ┌─────────┐ ┌─────────┐ ┌─────────────┐
-      │ Qdrant  │ │  MySQL  │ │    Redis     │
-      │ :6333   │ │ :3306   │ │   :6379      │
-      │ (vector)│ │(metadata│ │(session hist,│
-      └─────────┘ │+ history│ │ ingest status│
-                  └─────────┘ │ rate limit)  │
-                              └─────────────┘
-           │                       │
-           ▼                       ▼
-  ┌──────────────────┐   ┌──────────────────┐
-  │ OpenAI Embedding │   │  Cohere Rerank   │
-  │ text-embedding-  │   │  rerank-v3.5     │
-  │ 3-small (1536d)  │   └──────────────────┘
-  └──────────────────┘
-           │
-           ▼
-  ┌──────────────────┐
-  │  Anthropic API   │
-  │  claude-haiku-   │
-  │  4-5-20251001    │
-  └──────────────────┘
+Interviewer Browser
+      │ HTTPS
+      ▼
+  Nginx (443)  — SSL termination, SSE-friendly proxy timeout
+      │ HTTP :8080
+      ▼
+┌───────────────────────────── Spring Boot API ─────────────────────────────┐
+│ comm         RateLimitInterceptor (Bucket4j per-IP) · JWT filter · gate     │
+│ chat         ChatServiceImpl (SSE) · PromptBuilder + AnswerFormatResolver    │
+│ retrieval    RetrievalService                                                │
+│                ├─ QuestionClassifier (rule gate) · QueryIntentClassifier     │
+│                ├─ CompanyScopeResolver · QuerySignalClassifier               │
+│                └─ RetrievalStrategySelector → { MULTI_COMPANY · BEHAVIORAL ·  │
+│                       FACTUAL_NO_RERANK · FACTUAL_EXPERIENCE }               │
+│              CandidateRetriever · HybridSearcher · CohereRerankService        │
+│ vectorstore  QdrantSearchService · SparseVectorizer (BM25-IDF) · Embedding   │
+│ ingestion    IngestionRunner → TextExtractor · ChunkSplitter ·               │
+│                ChunkMetadataEnricher · DocumentSummarizer · PointAssembler   │
+│ llm          LlmClient + LlmThrottle  (one shared Claude rate timeline)       │
+└──┬─────────────────┬─────────────────┬─────────────────────────────────────┘
+   ▼                 ▼                 ▼
+ Qdrant :6333     MySQL :3306       Redis :6379
+ (dense+sparse)   (docs, chat,      (session history,
+                   prompt_template)  ingest status, rate limit)
+
+ external APIs:  OpenAI text-embedding-3-small (1536d)  ·  Cohere rerank-v3.5
+                 Anthropic claude-haiku-4-5-20251001 (chat, enrichment, document-level summary)
 ```
 
 ## Tech Stack
 
 | Layer | Choice | Why |
 |-------|--------|-----|
-| Backend framework | Spring Boot 4 + Java | Strong async support, familiar ecosystem |
-| AI integration | LangChain4j | Lightweight vs. LangChain Python; native Java types |
-| Vector store | Qdrant | Named multi-vector support (dense+sparse in one point); fast ANN; simple REST API |
-| Embedding | OpenAI text-embedding-3-small | Best cost/quality ratio; 1536-dim, strong semantic coverage |
-| Sparse vectorizer | Custom BM25-IDF (SparseVectorizer.java) | Corpus IDF persisted to disk; no external dependency; tunable stop words |
-| Reranker | Cohere rerank-v3.5 | Cross-encoder quality; faster than running a local model |
-| LLM | Claude Haiku | Low latency; cost-effective for short factual answers; good instruction following |
-| Document parsing | Apache Tika | Handles PDF/DOCX/TXT uniformly; no format-specific logic |
-| Metadata store | MySQL | Structured document + chat history; audit trail |
-| Session store | Redis | Conversation history (per session); ingestion status polling |
-| Rate limiting | Bucket4j (in-process) | Zero infra overhead; per-IP token bucket; resets handled by scheduled eviction |
+| Backend | Spring Boot 3.2 · Java 17 | Async support, familiar ecosystem |
+| AI integration | LangChain4j | Native Java types; lighter than LangChain Python |
+| Vector store | Qdrant | Named multi-vector (dense+sparse in one point); RRF fusion; REST |
+| Embedding | OpenAI text-embedding-3-small | Best cost/quality; 1536-dim |
+| Sparse | Custom BM25-IDF (`SparseVectorizer`) | Corpus IDF persisted to disk; no ES; tunable stop words |
+| Reranker | Cohere rerank-v3.5 | Cross-encoder quality without a local model |
+| LLM | Claude Haiku | Low latency; strong grounding/refusal; cheap for short answers |
+| Doc parsing | Apache Tika | PDF/DOCX/TXT uniformly |
+| Metadata | MySQL | Documents, chat history, prompt templates |
+| Session | Redis | Conversation history, ingest status, rate-limit counters |
+| Rate limit | Bucket4j (in-process) | Per-IP token bucket, zero infra |
 | Auth | Spring Security + JWT | Stateless; RBAC (ADMIN / INTERVIEWER / public) |
-| Reverse proxy | Nginx | SSL termination; 60s proxy timeout for SSE |
-| Deployment | Docker Compose | Single-host prod; reproducible environment |
+| Deploy | Docker Compose | Single-host prod |
 
-## Data Flow Summary
+## Data Flow
 
-**Ingestion (admin only):**
+**Ingestion (admin)** — `IngestionRunner`, `@Async`:
+```
+Upload → dedup check → disk save → MySQL PENDING
+  → Tika parse → ChunkSplitter (markdown-heading → semantic fallback, 1000/150)
+  → base metadata → ChunkMetadataEnricher (Claude: intent/behavioral/type/project/skills)
+  → document-level summary chunk (Claude) → [contextual prefix — disabled]
+  → OpenAI embed (dense) + BM25-IDF (sparse) + company tags
+  → Qdrant upsert → IDF corpus update → MySQL COMPLETED
+```
 
-> Upload  
-→ Disk save   
-→ MySQL (PENDING)  
-→ \[Async\] Tika parse  
-→ Semantic split (paragraph/sentence-aware, 1000/150)  
-→ RAPTOR: Claude summary chunk (prepended)  
-→ Contextual Retrieval: Claude context prefix per chunk (parallel, Semaphore 3)  
-→ OpenAI embed (dense) + BM25-IDF vectorize (sparse)  
-→ Company tagging   
-→ Qdrant upsert  
-→ IDF corpus update (idf\_corpus.json)  
-→ MySQL (COMPLETED, chunk\_count)
-
-**Chat (public):**
-
-> Question   
-→ Rule-based classifier  
-→ Company focus extraction  
-→ Query rewrite (pronoun resolution)  
-→ Hybrid search: dense + BM25-IDF   
-→ Qdrant RRF fusion  
-→ Cohere rerank   
-→ Company scope filter  
-→ Prompt assembly   
-→ Claude Haiku (SSE streaming)  
-→ Session history (Redis)
-
-## Database Schema (MySQL)
-
-- `sys_user` — users with `ROLE_ADMIN` or `ROLE_INTERVIEWER`
-- `rag_document` — upload metadata, ingestion status, chunk count
-- `rag_chat_history` — every Q&A pair, model used, latency, source doc IDs
-- `prompt_template` - build prompt
+**Chat (public)** — `RetrievalService` + `ChatServiceImpl`, SSE:
+```
+Question → rule gate (QuestionClassifier) → focus company + pronoun rewrite + sub-project expansion
+  → strategy select → { intent-aware hybrid + rerank + company allowlist  (behavioral)
+                      | per-company search + diversity                    (multi-company)
+                      | hybrid, no rerank                                  (factual temporal/profile)
+                      | hybrid + rerank, no cutoff                         (factual experience) }
+  → PromptBuilder (mode = f(type, strategy)) → Claude Haiku (streaming) → Redis history
+```
 
 ## Qdrant Collection Schema
 
-Each point contains:
-
-- `vectors.dense` — float[1536] from OpenAI text-embedding-3-small
-- `vectors.sparse` — BM25 sparse vector (indices + values)
+Each point:
+- `vectors.dense` — float[1536] (OpenAI) · `vectors.sparse` — BM25-IDF (indices + values)
 - `payload.text_segment` — raw chunk text
-- `payload.docId`, `fileName`, `category`, `chunkIndex`, `chunkTotal`
-- `payload.chunkType` — `"document_summary"` for RAPTOR summary chunks; absent for regular chunks
-- `payload.companies` — list of company labels for company-scoped filtering
+- `payload.docId / fileName / category / chunkIndex / chunkTotal`
+- `payload.companies` — company labels for scoped filtering
+- `payload.chunk_type` — `document_summary` for document-level summary chunks
+- `payload.intent_tags / behavioral_tags / project / skills` — enrichment tags (drive intent routing)
+
+## Database (MySQL)
+
+- `sys_user` — accounts with `ROLE_ADMIN` / `ROLE_INTERVIEWER`
+- `rag_document` — upload metadata, ingestion status, chunk count
+- `rag_chat_history` — one row per answered question: Q&A, model used, latency, source doc IDs, rerank scores (written asynchronously; gate replies are stored as `rule-based`)
+- `prompt_template` — hot-reloadable prompt templates
+- Schema and prompt templates are versioned with Flyway (`src/main/resources/db/migration`)
 
 ## Security
 
-- Chat API: fully public (no auth required) — designed for interviewers without accounts
+- Chat API public (`permitAll`) — interviewers need no account
 - Document upload/management: `ROLE_ADMIN` only
-- JWT stateless (24h expiry); BCrypt password hashing
-- Rate limiting: 5 req/min + 20 req/day per IP (Bucket4j, evicted on schedule)
-- Session limit: 30 turns per session (Redis counter)
+- JWT stateless (24h expiry); BCrypt hashing
+- Rate limit: 5 req/min + 20 req/day per IP (Bucket4j, scheduled eviction)
+- Session limit: 15 turns per session (Redis counter)

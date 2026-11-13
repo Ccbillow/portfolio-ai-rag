@@ -1,7 +1,6 @@
 package com.simon.rag.service.retrieval;
 
 import com.simon.rag.comm.enums.QuestionType;
-import com.simon.rag.model.eval.RerankedHit;
 
 import java.util.List;
 

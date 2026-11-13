@@ -41,13 +41,13 @@ Qdrant was the only option that stored dense + sparse vectors in one point nativ
 
 ## LLM: Claude Haiku
 
-**Problem:** Need an LLM that follows strict grounding instructions ("don't invent facts") reliably and streams fast. GPT-4o is better at reasoning but 10× more expensive per token.
+**Problem:** Need an LLM that follows strict grounding instructions ("don't invent facts") reliably and streams fast. GPT-4o is better at reasoning but 2–2.5× more expensive per token.
 
-**Cost-first:** Each chat turn sends ~1200 input tokens + ~300 output tokens. Claude Haiku costs $0.25/1M input + $1.25/1M output ≈ $0.0007 per question. At 20 questions/day limit per IP, the daily API cost is negligible.
+**Cost-first:** Each chat turn sends ~1200 input tokens + ~300 output tokens. Claude Haiku 4.5 costs $1/1M input + $5/1M output ≈ $0.0027 per question. At 20 questions/day limit per IP, the daily API cost is negligible.
 
 | Option | Input cost/1M | Output cost/1M | Instruction following | Latency |
 |--------|--------------|----------------|----------------------|---------|
-| Claude Haiku | $0.25 | $1.25 | Strong | Fast |
+| Claude Haiku 4.5 | $1 | $5 | Strong | Fast |
 | Claude Sonnet | $3 | $15 | Stronger | Medium |
 | GPT-4o mini | $0.15 | $0.60 | Good | Fast |
 | GPT-4o | $2.50 | $10 | Best | Slower |
@@ -96,7 +96,12 @@ Fix: use a cross-encoder reranker that reads question + each chunk together and 
 | Hybrid (this) | ✅ | ✅ | None (Qdrant handles fusion) |
 | Elasticsearch hybrid | ✅ | ✅ | Separate ES cluster |
 
-**Accepted:** Sparse vectors make each Qdrant point larger. BM25 without IDF is a simplification (no corpus-level term weighting), but for a single-person knowledge base the relative term frequency is enough.
+**Corpus IDF:** the BM25 vectorizer keeps a persisted corpus (`idf_corpus.json`, updated after each
+ingest), so rare technical terms (SofaBoot, MAT, SPEL) dominate keyword scores instead of being diluted
+by common words. Falls back to TF-only (IDF=1) before any corpus exists.
+
+**Accepted:** Sparse vectors make each Qdrant point larger, and deleting a document does not decrement
+corpus stats — acceptable for a single-person knowledge base.
 
 ---
 
@@ -132,9 +137,42 @@ Fix: use a cross-encoder reranker that reads question + each chunk together and 
 
 **Problem it was solving:** Single query sometimes missed relevant chunks when phrasing didn't match the resume text well. Generating 2–3 query variants improved recall.
 
-**Why disabled (Phase 9.2):** It required one extra Claude API call per question (query generation). That doubled the LLM cost — from ~$0.0007 to ~$0.0014 per question — with no measurable recall improvement in testing.
+**Why disabled (Phase 9.2):** It required one extra Claude API call per question (query generation). That doubled the LLM cost — from ~$0.0027 to ~$0.0054 per question — with no measurable recall improvement in testing.
 
 **Cost-first:** This is the clearest cost-first decision in the project. The `withSubProjectQueries()` method replaced it for the one case where it actually mattered (Deloitte → OCBC/Sanofi), using string replacement instead of an LLM call.
+
+---
+
+## Retrieval: Strategy Pattern over One Pipeline
+
+**Problem:** One retrieval pipeline can't serve every question. Factual questions ("how long at OCBC?")
+want BM25 keyword hits with no reranker cutoff; behavioral questions want intent-boosted hybrid + a
+strict rerank cutoff; career-spanning questions must guarantee every company is represented, which a
+global rerank actively breaks (it favors the richest-vocabulary company).
+
+**Solution:** `RetrievalStrategySelector` picks one `RetrievalStrategy` per question from the question
+type + query signals — `BEHAVIORAL`, `FACTUAL_NO_RERANK`, `FACTUAL_EXPERIENCE`, `MULTI_COMPANY`. Each
+owns its own fetch/rerank/filter behavior; adding a strategy doesn't touch the others.
+
+**Accepted:** More moving parts than a single flow, but each path stays small and independently testable,
+and misrouting degrades to a reasonable default (`BEHAVIORAL`). Details in `retrieval-strategy.md`.
+
+---
+
+## Ingest-Time LLM Enrichment: Pay Once, Not Per Query
+
+**Problem:** Intent-aware retrieval needs each chunk tagged with the interview intents it answers
+(architecture, leadership, production_issue…). Broad questions ("tell me about Alipay") need a summary
+that no single fine-grained chunk provides.
+
+**Solution:** Do the LLM work **at ingestion**, amortized over every future query. `ChunkMetadataEnricher`
+tags chunks in batches of 5 (one Claude call per batch); `DocumentSummarizer` (document-level summary) generates one
+summary chunk per document. Both feed the Qdrant payload and cost nothing at query time.
+
+**Cost-first:** Enrichment and the document-level summary run once per upload (a rare admin action), so per-query latency and cost
+are unaffected. Contextual Retrieval (per-chunk context prefix) is implemented but **disabled** — its extra
+Claude call per chunk wasn't justified at the current corpus size. A shared `LlmThrottle` keeps all Claude
+traffic (chat, enrichment, document-level summary) under one account rate budget.
 
 ---
 

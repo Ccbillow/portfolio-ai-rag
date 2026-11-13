@@ -1,170 +1,117 @@
 # Ingestion Pipeline
 
+Async document ingestion, orchestrated by `IngestionRunner`. Each stage is a dedicated
+SRP component under `service.ingestion`; the runner only wires the pipeline and manages
+status/persistence.
+
 ## Sequence
 
 ```
-POST /api/documents/upload
-  │
-  ├─ Dedup check (MySQL: fileName != FAILED already exists?) → skip if yes
-  │
-  ├─ Save file to disk: uploadDir/{taskId}  ← decouple from HTTP lifetime
-  │
+POST /api/documents/upload (ROLE_ADMIN)
+  │  DocumentServiceImpl.upload — synchronous, returns immediately
+  ├─ Dedup check (MySQL: same fileName, status != FAILED)  → skip if exists (no re-embed cost)
+  ├─ UploadStorage.save → uploadDir/{taskId}                ← decouple file from HTTP lifetime
   ├─ MySQL INSERT (status=PENDING, taskId=UUID)
-  │
-  ├─ Redis SET ingest:task:{taskId} = PENDING  TTL 24h
-  │
-  └─ Return 200 immediately (taskId for polling)
+  ├─ Redis SET ingest:task:{taskId} = PENDING (TTL 24h)
+  └─ Return 200 { taskId }  (poll via GET /api/documents/task/{taskId})
        │
-       └─ @Async thread (rag-async-*)
-            │
-            ├─ Redis: PROCESSING
-            │
-            ├─ Files.readAllBytes
-            │
-            ├─ Apache Tika: parseToString()  → plain text
-            │    └─ normalizeText(): \r\n → \n; single \n → space; 3+ \n → \n\n
-            │
-            ├─ semanticSplit(): paragraph-aware chunking (chunkSize=1000, overlap=150)
-            │    ├─ Split on \n\n (paragraph boundaries from normalizeText)
-            │    └─ Merge short paragraphs until near target size
-            │
-            ├─ Metadata attachment per chunk:
-            │    docId, fileName, category, chunkIndex, chunkTotal
-            │
-            ├─ [RAPTOR] generateDocumentSummary() → Claude (1 call)
-            │    └─ 4-6 sentence summary: company, role, achievements, tech stack
-            │         prepended as chunkIndex="summary", chunkType="document_summary"
-            │
-            ├─ [Contextual Retrieval] Claude context prefix per chunk (if enabled)
-            │    ├─ Parallel: CompletableFuture.supplyAsync + Semaphore(concurrency=3)
-            │    └─ 1-2 sentence prefix: company, project, time period
-            │
-            ├─ Dense embedding: OpenAI text-embedding-3-small (batch=100)
-            │
-            ├─ Sparse vectorization: BM25-IDF in-process (SparseVectorizer)
-            │
-            ├─ Company tagging:
-            │    fileCompanies = extractCompaniesFromText(fileName)
-            │    chunkCompanies = extractCompaniesFromText(chunkText)
-            │    companies = union(fileCompanies, chunkCompanies)
-            │
-            ├─ Qdrant upsert: PUT /collections/{name}/points
-            │    { id: UUID, vectors: {dense, sparse}, payload: {..., companies, chunkType} }
-            │
-            ├─ MySQL UPDATE: status=COMPLETED, chunk_count=N
-            │
-            ├─ SparseVectorizer.addChunksToCorpus() → update + persist idf_corpus.json
-            │
-            └─ Files.deleteIfExists(diskPath)  ← temp file cleanup
+       └─ @Async("taskExecutor")  IngestionRunner.ingest
+            ├─ Redis/MySQL: PROCESSING
+            ├─ TextExtractor        — Apache Tika → plain text (streamed)
+            ├─ ChunkSplitterSelector
+            │     ├─ MarkdownHeadingChunkSplitter (## / ### headings; stamps `heading` meta)  ← preferred
+            │     └─ SemanticChunkSplitter (paragraph-aware)                                    ← fallback
+            │     chunkSize≈1000, overlap 150; oversized chunks split at sentence boundaries
+            ├─ Stamp base metadata: docId, fileName, category, chunkIndex, chunkTotal
+            ├─ ChunkMetadataEnricher — Claude tags each chunk (batches of 5, parallel)          [enabled]
+            │     → intent_tags, behavioral_tags, chunk_type, project, skills, confidence
+            ├─ DocumentSummarizer (document-level summary) — Claude, 1 call → summary chunk at index 0          [enabled]
+            ├─ ContextualRetrievalEnricher — per-chunk context prefix before embedding          [disabled]
+            ├─ EmbeddingService — OpenAI text-embedding-3-small, batches of 100 → float[1536]
+            ├─ QdrantPointAssembler
+            │     ├─ SparseVectorizer — BM25-IDF sparse vector per chunk (in-process)
+            │     ├─ CompanyTagger — company labels (heading → filename → text) + parent derivation
+            │     └─ payload: text, docId/fileName/category/chunkIndex, companies, enrichment tags
+            ├─ Qdrant upsert points { dense + sparse vectors, payload }
+            ├─ Redis/MySQL: COMPLETED, chunk_count = N
+            ├─ SparseVectorizer.addChunksToCorpus → persist idf_corpus.json
+            └─ finally: delete temp file from disk
 ```
 
-## Key Configuration
+## Feature Toggles (deployed)
+
+| Stage | Enabled | Notes |
+|-------|---------|-------|
+| Metadata enrichment | ✅ | `concurrency=2`, `batch-size=5`, `rate-limit-ms=1500` |
+| Document-level summary (`rag.raptor.enabled`) | ✅ | 1 Claude call/doc, `max-doc-chars=12000` |
+| Contextual Retrieval | ❌ | off by default — cost/latency not justified at current corpus size |
 
 ```yaml
 rag:
-  embedding:
-    chunk-size: 1000      # chars
-    chunk-overlap: 150    # chars
-  upload:
-    dir: /tmp/rag-uploads  # idf_corpus.json also persisted here
-  contextual-retrieval:
-    enabled: true
-    max-doc-chars: 12000   # chars of full doc sent to Claude for context
-    concurrency: 3         # max parallel Claude calls (Semaphore)
-  raptor:
-    enabled: true
-    max-doc-chars: 12000
-  companies:
-    - Alipay
-    - Sinosig
-    - NetEase
-    - Deloitte
-    - OCBC
-    - Sanofi
-  company-subgroups:
-    Deloitte:
-      - OCBC
-      - Sanofi
-
-langchain4j:
-  open-ai:
-    embedding-model-name: text-embedding-3-small
+  embedding: { chunk-size: 1000, chunk-overlap: 150 }
+  metadata-enrichment: { enabled: true, concurrency: 2, batch-size: 5, rate-limit-ms: 1500 }
+  raptor:               { enabled: true, max-doc-chars: 12000 }
+  contextual-retrieval: { enabled: false, concurrency: 3, rate-limit-ms: 6000 }
+  companies: [Alipay, Sinosig, NetEase, Deloitte, OCBC, Sanofi]
+  company-subgroups: { Deloitte: [OCBC, Sanofi] }
+langchain4j.open-ai.embedding-model-name: text-embedding-3-small
 ```
 
-## Chunk Size Decision
+## Key Designs
 
-| Phase | chunkSize | overlap | Splitter |
-|-------|-----------|---------|---------|
-| Phase 2 | ~512 | ~50 | LangChain4j default (character) |
-| Phase 3 | ~512 | ~50 | Character; added sentence window expansion (+1 neighbor) |
-| Phase 5+ | 1000 | 150 | Character; removed neighbor expansion |
-| Phase 10 | 1000 | 150 | Semantic (paragraph → sentence fallback) |
+### Metadata Enrichment → intent routing
+At ingest, Claude classifies each chunk into the same taxonomy the query side uses:
+`intent_tags` (architecture, production_issue, leadership, delivery, technical_depth,
+ambiguity, conflict, growth), `behavioral_tags`, `chunk_type`, `project`, `skills`.
+These tags are stored in the Qdrant payload and drive **intent-aware retrieval**
+(query intents boost matching chunks — see `retrieval-strategy.md`).
 
-**Why 1000/150:**
-Larger chunks carry more context per retrieval hit. 150-char overlap prevents information loss at boundaries.
+Chunks are enriched in **batches of 5 per Claude call** (each object echoes its `index`
+so a dropped item can't shift the batch). A global `Semaphore(2)` caps concurrent calls
+across all uploads; rate limiting is delegated to the shared Claude timeline (`LlmThrottle`).
 
-**Why semantic chunking (Phase 10):**
-Fixed character splitting cuts mid-sentence, producing incomplete facts in chunks.
+### Document-Level Summary
+Broad questions ("tell me about your Alipay experience") need many small chunks pieced
+together, which is unreliable. So one 4–6 sentence document summary is generated per doc,
+stored as a normal point tagged `chunk_type=document_summary` at `chunkIndex="summary"`.
+Broad questions score high against it; specific questions score higher against fine-grained
+chunks — same collection, no routing logic. Prompt: `raptor_document_summary`.
 
-## Contextual Retrieval
+### Contextual Retrieval (disabled)
+Optionally prepends a Claude-generated 1–2 sentence context prefix (company/project/time)
+to a chunk's **embedding text**, so vectors carry context that raw chunks lack. Bounded by
+`Semaphore(3)` and a 6s gap to stay under the token/min limit. Off by default.
 
-Problem: chunks often lack context — a chunk saying "reduced API latency by 40%" doesn't specify which company or project.
+### Company Tagging
+`CompanyTagger.tag` merges signals with priority: markdown **heading** (most reliable for the
+chunk) → **filename** (only if heading empty) → always scan **chunk text**. It then
+**reverse-derives parent companies** from `company-subgroups` (a chunk tagged `[OCBC]` also gets
+`[Deloitte]`), so parent-company searches find sub-project chunks without query expansion.
 
-Fix: at index time, Claude generates a 1-2 sentence prefix per chunk:
-> "This chunk is from the OCBC API gateway redesign project at Deloitte (2022–2024). It describes..."
+Example: `Deloitte-OCBC-project.pdf`, chunk mentions "OCBC Banking Portal"
+→ `companies: [OCBC, Deloitte]`.
 
-The prefix is prepended to the **embedding text** so the dense vector carries company/project/time context. 
-
-## RAPTOR Document Summary
-
-Problem: broad questions ("tell me about your overall experience at Alipay") require piecing together many small chunks, which is unreliable.
-
-Fix: at ingest time, Claude generates one 4-6 sentence summary per document covering role, responsibilities, key achievements, and tech stack. This summary is stored as a regular Qdrant point tagged `chunkType=document_summary` and retrieved like any other chunk.
-
-Broad questions naturally score high against the summary chunk. Specific questions score higher against the fine-grained chunks. Both are in the same collection with no routing logic needed.
-
-Prompt: stored in `prompt_template` as `raptor_document_summary`.
+### BM25-IDF Sparse Vectors
+Custom in-process vectorizer (no Elasticsearch). The IDF corpus (`idf_corpus.json`) is updated
+after each ingestion so rare technical terms (SofaBoot, MAT, SPEL) dominate keyword scores.
+Full formula in `retrieval-strategy.md`.
 
 ## Why Apache Tika
-
-Single dependency handles PDF, DOCX, TXT, and any future format without format-specific parsers. Tika's output sometimes concatenates words across paragraph boundaries when newlines are stripped, which is why `normalizeText()` converts single newlines to spaces.
+One dependency handles PDF/DOCX/TXT/future formats. Tika can concatenate words across stripped
+newlines, so text is normalized (single `\n` → space, `\n\n\n+` → paragraph break) before chunking.
 
 ## Deduplication
-
-Before inserting, the pipeline checks MySQL for an existing record with the same filename and status != FAILED. If found, it returns the existing record immediately — no re-embedding, no API cost. This prevents accidental duplicate vectors in Qdrant.
+Before insert, checks MySQL for a same-filename record with status != FAILED. If found, returns
+it immediately — no re-embedding, no API cost, no duplicate vectors. FAILED records are skipped,
+so re-uploading a previously failed file works.
 
 ## Async Thread Pool
-
 ```yaml
-spring:
-  task:
-    execution:
-      pool:
-        core-size: 4
-        max-size: 8
-        queue-capacity: 100
-      thread-name-prefix: rag-async-
+spring.task.execution.pool: { core-size: 4, max-size: 8, queue-capacity: 100 }
 ```
-
-Upload returns immediately; ingestion happens on the `rag-async-*` pool. Status is polled via `GET /api/documents/task/{taskId}` — Redis first, MySQL fallback.
-
-## Company Tagging Logic
-
-Each chunk gets a `companies` list by scanning both the filename and the chunk text for configured company names (case-insensitive). 
-
-Example:
-
-- File: `Deloitte-OCBC-project.pdf` → fileCompanies = `[Deloitte]`
-- Chunk text mentions "OCBC Banking Portal" → chunkCompanies = `[OCBC]`
-- Stored payload: `companies: ["Deloitte", "OCBC"]`
-
-This tag is used at retrieval time for company-scoped filtering.
+Upload returns immediately; ingestion runs on `taskExecutor`. Status polled via Redis (fast) →
+MySQL fallback (covers Redis restart / TTL expiry).
 
 ## Error Handling
-
-If any step fails, the pipeline:
-1. Sets MySQL status = FAILED with error_message
-2. Sets Redis status = FAILED
-3. Does NOT delete the temp file on disk (preserves it for manual investigation)
-
-The dedup check skips FAILED records, so re-upload of a previously failed file works correctly.
+On any failure: MySQL + Redis status = FAILED (error_message truncated to 500 chars). The temp
+file is always removed in the `finally` block. Dedup skips FAILED records so re-upload succeeds.
