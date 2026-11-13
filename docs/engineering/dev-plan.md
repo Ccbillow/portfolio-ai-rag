@@ -51,7 +51,7 @@
 ## ✅ Phase 7 — Prompt Management
 
 - MySQL table: `prompt_template`; hot-reload via admin API (no redeploy needed)
-- **Rule-based Agent Layer** `QuestionClassifier`: INVALID / OUT_OF_SCOPE / STRATEGIC / FACTUAL / TECHNICAL / BEHAVIORAL — zero LLM cost
+- **Rule-based  Intent Router** `QuestionClassifier`: INVALID / OUT_OF_SCOPE / STRATEGIC / FACTUAL / TECHNICAL / BEHAVIORAL — zero LLM cost
 - Type-specific prompt hints injected at runtime by classifier output
 
 ---
@@ -124,44 +124,93 @@ Evolved chunking from naive fixed-size -> simple text splitting -> retrieval-ori
 
 ---
 
-## 🔜 Phase 14 — Observability
+## 🔜 Phase 14 — Engineering Hardening
 
-- Structured JSON logging: `sessionId`, `questionType`, `focusCompany`, `numHits`, `rerankScores`, `latencyMs`
-- Prometheus + Grafana: retrieval hit rate, rerank score distribution, LLM latency p50/p95; add containers to existing Docker Compose
+- **Stream cancellation**: stop the LLM stream when the client disconnects (no more wasted tokens)
+- **SSE newlines**: fix `\n\n` replacement breaking when the pair is split across tokens
+- **Chat history persistence**: write Q&A, model, latency, source doc IDs to `rag_chat_history` (schema exists, write path missing)
+- **Flyway**: versioned schema + prompt-template migrations (init scripts only run on first volume creation, so later changes never reach prod)
+- **Core unit tests**: `RetrievalStrategySelector`, the 4 strategies, `CompanyScopeResolver`, `QuestionClassifier`
+- **CI fix**: trigger on push / PR, use the `test` profile, correct the build job condition
+- **Cleanup**: unused dependencies (MiniLM; resilience4j to confirm), `resources/mapper/*.java`, move `RerankedHit` out of `model.eval`
+- **Doc alignment**: judge model, Haiku pricing, rename "RAPTOR" → document-level summary and "agent layer" → rule-based router
+- Verify: `mvn test` green; CI runs automatically on PR
 
 ---
 
-## 🔜 Phase 15 — Admin Dashboard
+## 🔜 Phase 15 — Eval Quantification
 
-Knowledge Base
-- Document list: upload, status (pending/processing/failed/completed), retry on failure
-- Document detail: chunk count, company tags, file metadata
-- Delete document
+- **Gold chunk labels**: add expected chunks to the 50 eval cases
+- **Retrieval metrics**: Recall@k, MRR, hit rate per strategy
+- **Ablation table**: dense → hybrid → +rerank → +intent boost; published in README
+- **Generation metrics**: judge scores groundedness / completeness on all cases, not only diff candidates
+- **CI gate**: unit tests + classifier eval on PR (no Qdrant data or paid API calls needed); block merge on regression
+- **Full eval stays local**: scenario eval + judge run via Makefile against the local index; baseline promoted manually
+- Verify: README has an ablation table with numbers
 
-Prompt Management
-- View and inline-edit all prompt templates (API already exists, UI only)
-- Hot-reload without restart
+---
 
-Token Usage
-- Per-day API token cost tracking (OpenAI + Cohere/Haiku); requires new MySQL table
+## 🔜 Phase 16 — Observability
+
+- **Structured JSON logging**: `traceId`, `sessionId`, `questionType`, `strategy`, `numHits`, `rerankScores`, `latencyMs`
+- **Metrics**: Micrometer — per-stage latency p50/p95, retrieval hit rate, rerank score distribution
+- **Prod: zero new containers** — push metrics via `micrometer-registry-otlp` to Grafana Cloud (free tier); no Prometheus or agent on the server
+- **Local: optional compose profile** with Prometheus + Grafana for development and screenshots; off by default
+- **Token & cost tracking**: per day and per call type (chat / enrichment / summary), stored in MySQL
+- **LLM tracing**: Langfuse Cloud (free tier, not self-hosted); one trace per request, one span per stage; metadata only, no question / answer text
+- Verify: a Grafana panel shows which stage made a single request slow; prod server memory unchanged
+
+---
+
+## 🔜 Phase 17 — Resilience & Guardrails
+
+- **`LlmThrottle` redesign**: fixed 3s gap → token bucket with separate interactive / background budgets (prerequisite for Phase 19)
+- **Resilience4j**: timeout / retry / circuit breaker on Cohere, OpenAI, Anthropic; Cohere open-circuit falls back to RRF order
+- **Redis-backed rate limiting**: Bucket4j on Redis, ready for multi-instance
+- **Global daily budget cap**: token / cost ceiling across all IPs (per-IP limits don't bound total spend); over budget → friendly refusal
+- **Prompt structure**: split system / user messages; delimit context and question
+- **Injection defense**: rule-based detection + adversarial cases added to the eval set
+- Verify: answers still served with Cohere down; all adversarial cases pass; requests refused once the daily cap is hit
+
+---
+
+## 🔜 Phase 18 — Answer Quality & Routing
+
+- **Failure triage**: label bad answers as routing / retrieval / generation using Phase 15 data before tuning
+- **Conceptual questions**: new `CONCEPTUAL` type (`what is / explain / difference between`, no "you/your"); general knowledge allowed, facts about me must come from Context
+- **Hybrid routing**: rules first; when no rule matches, classify via LLM structured output; default type is no longer BEHAVIORAL
+- **Prompt slimming**: replace rule lists / word counts / blacklists with 2–3 few-shot examples per type; keep only changes that don't regress on eval
+- **Model upgrade**: Haiku 4.5 → Haiku 5.5; compare on eval set before switching
+- Verify: classifier eval and scenario eval ≥ baseline; conceptual cases pass
+
+---
+
+## 🔜 Phase 19 — Agentic RAG (minimal)
+
+- **Routing**: simple questions keep the existing workflow; multi-hop / comparison questions go to a tool-calling agent; falls back to the workflow on error
+- **Tools**: `search_experience(query, company?, intent?)` (hybrid + rerank), `get_company_summary(company)`, `list_companies_timeline()` (MySQL)
+- **Agent loop**: LangChain4j `@Tool` + Claude Haiku; max 4 tool calls, token budget
+- **Tracing**: reuse Phase 16 Langfuse; per-step tool args, latency, tokens
+- **Evaluation**: add multi-hop cases; Workflow vs Agent table on quality / latency / cost
+- **Optional**: expose the same tools as an MCP server
+- Verify: comparison table in README, concluding which questions justify an agent
 
 ---
 
 ## Backlog
 
-- Redis-backed rate limiting (required for multi-instance scale-out)
+- [Admin Dashboard] Document list / detail / delete / retry; prompt template view + inline edit
+- [Admin Dashboard] Baseline eval runner (persist runs in MySQL) and eval diff UI
 - [Ingestion] Document versioning: re-upload replaces old chunks automatically
 - [Ingestion] Duration queries: extract tenure dates from MySQL structured fields, append to context
 - [Retrieval] Semantic answer caching (embedding similarity, not MD5)
 - [Generation] Multi-company comparison: detect "compare X vs Y", run two scoped retrieval pipelines, merge contexts
 - [Evaluation] Thumbs up/down feedback; stored in MySQL for retrieval quality analysis
-- [Evaluation] CI gate: run smoke test on PR via GitHub Actions, block merge on failure
-- [Evaluation] Baseline eval runner: trigger from `Admin Dashboard`, persist run results in MySQL
-- [Evaluation] Eval diff UI: select two baseline runs, visualize regression/improvement in `Admin Dashboard`
 - [Frontend] Source chunk expander: click source chip to view full chunk text
 
-**High cost — skip for now:**
+**Not planned:**
 
 - [Retrieval] HyDE: LLM generates a hypothetical answer first, embed that for retrieval
-- [Retrieval] Dual index / multi-path recall: separate dense + sparse indexes, merge client-side (Qdrant RRF already covers this)
-- [Routing] Advanced routing: LLM Classifier / Ambiguity Detection
+- [Retrieval] Dual index / multi-path recall: Qdrant RRF already covers this
+- [Retrieval] GraphRAG, multi-agent, fine-tuning, Kubernetes: no measurable benefit at this corpus size
+- [Cost] Prompt caching: ~1.6K tokens per request is likely below the minimum cacheable length
