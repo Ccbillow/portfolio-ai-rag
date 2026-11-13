@@ -7,6 +7,7 @@ import com.simon.rag.config.RagProperties;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.vo.Vos;
 import com.simon.rag.service.retrieval.RerankedHit;
+import com.simon.rag.service.ChatHistoryRecorder;
 import com.simon.rag.service.ChatService;
 import com.simon.rag.llm.ClaudeBusyException;
 import com.simon.rag.llm.LlmClient;
@@ -38,6 +39,7 @@ public class ChatServiceImpl implements ChatService {
     private final PromptBuilder promptBuilder;
     private final RedisCacheService redisCacheService;
     private final RetrievalService retrievalService;
+    private final ChatHistoryRecorder chatHistoryRecorder;
 
     @Value("${langchain4j.anthropic.chat-model-name:claude-haiku-4-5-20251001}")
     private String modelName;
@@ -82,9 +84,13 @@ public class ChatServiceImpl implements ChatService {
         // 3. Retrieval pipeline
         RetrievalResult retrieval = retrievalService.retrieve(request.getQuestion(), request.getSessionId());
         if (retrieval.hasEarlyReturn()) {
+            chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(),
+                    retrieval.earlyReturn(), List.of(), MODEL_RULE_BASED, System.currentTimeMillis() - start);
             return ruleBasedResponse(retrieval.earlyReturn(), start);
         }
         if (retrieval.noHits()) {
+            chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(),
+                    NO_HITS_MESSAGE, List.of(), MODEL_RULE_BASED, System.currentTimeMillis() - start);
             return modelResponse(NO_HITS_MESSAGE, List.of(), start);
         }
 
@@ -102,6 +108,8 @@ public class ChatServiceImpl implements ChatService {
         }
         redisCacheService.appendConversationHistory(
                 request.getSessionId(), request.getQuestion(), answer);
+        chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(), answer,
+                retrieval.hits(), modelName, System.currentTimeMillis() - start);
 
         Vos.ChatResponse response = modelResponse(answer, toSources(retrieval.hits()), start);
 
@@ -119,6 +127,7 @@ public class ChatServiceImpl implements ChatService {
 
     @Override
     public SseEmitter askStream(Dtos.ChatRequest request) {
+        long start = System.currentTimeMillis();
         SseEmitter emitter = new SseEmitter(90_000L);
         emitter.onTimeout(() -> {
             try {
@@ -138,6 +147,8 @@ public class ChatServiceImpl implements ChatService {
             RetrievalResult retrieval = retrievalService.retrieve(request.getQuestion(), request.getSessionId());
             if (retrieval.hasEarlyReturn()) {
                 sendMessageAndDone(emitter, retrieval.earlyReturn());
+                chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(),
+                        retrieval.earlyReturn(), List.of(), MODEL_RULE_BASED, System.currentTimeMillis() - start);
                 return emitter;
             }
             log.info("Stream — {} hits after retrieval pipeline",
@@ -145,6 +156,8 @@ public class ChatServiceImpl implements ChatService {
 
             if (retrieval.noHits()) {
                 sendMessageAndDone(emitter, NO_HITS_MESSAGE);
+                chatHistoryRecorder.record(request.getSessionId(), request.getQuestion(),
+                        NO_HITS_MESSAGE, List.of(), MODEL_RULE_BASED, System.currentTimeMillis() - start);
                 return emitter;
             }
 
@@ -179,6 +192,8 @@ public class ChatServiceImpl implements ChatService {
                             logTokenUsage("stream", response.tokenUsage(), question);
                             redisCacheService.appendConversationHistory(
                                     sessionId, question, fullAnswer.toString());
+                            chatHistoryRecorder.record(sessionId, question, fullAnswer.toString(),
+                                    retrieval.hits(), modelName, System.currentTimeMillis() - start);
                             try {
                                 emitter.send(SseEmitter.event().name("done").data("[DONE]"));
                                 emitter.complete();
