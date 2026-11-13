@@ -3,7 +3,7 @@ package com.simon.rag.service.retrieval.rerank;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.simon.rag.config.RagProperties;
-import com.simon.rag.model.eval.RerankedHit;
+import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;

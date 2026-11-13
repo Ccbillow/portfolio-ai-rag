@@ -2,7 +2,7 @@ package com.simon.rag.service.retrieval.strategy;
 
 import com.simon.rag.comm.enums.IntentTag;
 import com.simon.rag.config.RagProperties;
-import com.simon.rag.model.eval.RerankedHit;
+import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.retrieval.CandidateRetriever;
 import com.simon.rag.service.retrieval.QuerySignalClassifier;
 import com.simon.rag.service.retrieval.RetrievalContext;

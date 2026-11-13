@@ -6,7 +6,7 @@ import com.simon.rag.service.prompt.PromptBuilder;
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.domain.dto.Dtos;
 import com.simon.rag.domain.vo.Vos;
-import com.simon.rag.model.eval.RerankedHit;
+import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.ChatService;
 import com.simon.rag.llm.ClaudeBusyException;
 import com.simon.rag.llm.LlmClient;

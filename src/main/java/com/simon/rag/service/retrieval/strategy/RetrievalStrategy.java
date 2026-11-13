@@ -1,6 +1,6 @@
 package com.simon.rag.service.retrieval.strategy;
 
-import com.simon.rag.model.eval.RerankedHit;
+import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.retrieval.RetrievalContext;
 
 import java.util.List;

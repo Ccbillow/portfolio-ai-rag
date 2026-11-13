@@ -2,7 +2,6 @@ package com.simon.rag.service.retrieval;
 
 import com.simon.rag.comm.enums.QuestionType;
 import com.simon.rag.config.RagProperties;
-import com.simon.rag.model.eval.RerankedHit;
 import com.simon.rag.service.cache.ConversationHistory;
 import com.simon.rag.service.cache.RedisCacheService;
 import com.simon.rag.service.retrieval.query.MultiQueryExpander;
