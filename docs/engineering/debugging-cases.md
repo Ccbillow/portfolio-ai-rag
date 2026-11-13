@@ -36,7 +36,7 @@
 
 ## Retrieval
 
-### Agent layer: all questions went to the LLM
+### Rule-based router: all questions went to the LLM
 
 **Problem:** Questions like "What's the weather?", "Can you tell me your salary expectation?", or "Give me some interview questions" all reached retrieval and Claude — burning API cost and returning garbage responses.
 

@@ -17,7 +17,7 @@ sequenceDiagram
 
     API->>RS: retrieve(question, sessionId)
 
-    Note over RS: 1 · Agent gate — QuestionClassifier (rule-based, first match wins)
+    Note over RS: 1 · Rule gate — QuestionClassifier (rule-based, first match wins)
     alt INVALID / OUT_OF_SCOPE / STRATEGIC / CONTACT_REDIRECT / PERSONAL
         RS-->>API: earlyReturn message
         API-->>Browser: SSE message + done

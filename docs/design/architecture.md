@@ -37,7 +37,7 @@ Interviewer Browser
                    prompt_template)  ingest status, rate limit)
 
  external APIs:  OpenAI text-embedding-3-small (1536d)  ·  Cohere rerank-v3.5
-                 Anthropic claude-haiku-4-5-20251001 (chat, enrichment, RAPTOR)
+                 Anthropic claude-haiku-4-5-20251001 (chat, enrichment, document-level summary)
 ```
 
 ## Tech Stack
@@ -65,7 +65,7 @@ Interviewer Browser
 Upload → dedup check → disk save → MySQL PENDING
   → Tika parse → ChunkSplitter (markdown-heading → semantic fallback, 1000/150)
   → base metadata → ChunkMetadataEnricher (Claude: intent/behavioral/type/project/skills)
-  → RAPTOR summary chunk (Claude) → [contextual prefix — disabled]
+  → document-level summary chunk (Claude) → [contextual prefix — disabled]
   → OpenAI embed (dense) + BM25-IDF (sparse) + company tags
   → Qdrant upsert → IDF corpus update → MySQL COMPLETED
 ```
@@ -87,15 +87,16 @@ Each point:
 - `payload.text_segment` — raw chunk text
 - `payload.docId / fileName / category / chunkIndex / chunkTotal`
 - `payload.companies` — company labels for scoped filtering
-- `payload.chunk_type` — `document_summary` for RAPTOR chunks
+- `payload.chunk_type` — `document_summary` for document-level summary chunks
 - `payload.intent_tags / behavioral_tags / project / skills` — enrichment tags (drive intent routing)
 
 ## Database (MySQL)
 
 - `sys_user` — accounts with `ROLE_ADMIN` / `ROLE_INTERVIEWER`
 - `rag_document` — upload metadata, ingestion status, chunk count
-- `rag_chat_history` — Q&A pairs, model used, latency, source doc IDs
+- `rag_chat_history` — one row per answered question: Q&A, model used, latency, source doc IDs, rerank scores (written asynchronously; gate replies are stored as `rule-based`)
 - `prompt_template` — hot-reloadable prompt templates
+- Schema and prompt templates are versioned with Flyway (`src/main/resources/db/migration`)
 
 ## Security
 

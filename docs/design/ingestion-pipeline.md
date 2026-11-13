@@ -25,7 +25,7 @@ POST /api/documents/upload (ROLE_ADMIN)
             ├─ Stamp base metadata: docId, fileName, category, chunkIndex, chunkTotal
             ├─ ChunkMetadataEnricher — Claude tags each chunk (batches of 5, parallel)          [enabled]
             │     → intent_tags, behavioral_tags, chunk_type, project, skills, confidence
-            ├─ DocumentSummarizer (RAPTOR) — Claude, 1 call → summary chunk at index 0          [enabled]
+            ├─ DocumentSummarizer (document-level summary) — Claude, 1 call → summary chunk at index 0          [enabled]
             ├─ ContextualRetrievalEnricher — per-chunk context prefix before embedding          [disabled]
             ├─ EmbeddingService — OpenAI text-embedding-3-small, batches of 100 → float[1536]
             ├─ QdrantPointAssembler
@@ -43,7 +43,7 @@ POST /api/documents/upload (ROLE_ADMIN)
 | Stage | Enabled | Notes |
 |-------|---------|-------|
 | Metadata enrichment | ✅ | `concurrency=2`, `batch-size=5`, `rate-limit-ms=1500` |
-| RAPTOR summary | ✅ | 1 Claude call/doc, `max-doc-chars=12000` |
+| Document-level summary (`rag.raptor.enabled`) | ✅ | 1 Claude call/doc, `max-doc-chars=12000` |
 | Contextual Retrieval | ❌ | off by default — cost/latency not justified at current corpus size |
 
 ```yaml
@@ -70,7 +70,7 @@ Chunks are enriched in **batches of 5 per Claude call** (each object echoes its 
 so a dropped item can't shift the batch). A global `Semaphore(2)` caps concurrent calls
 across all uploads; rate limiting is delegated to the shared Claude timeline (`LlmThrottle`).
 
-### RAPTOR Document Summary
+### Document-Level Summary
 Broad questions ("tell me about your Alipay experience") need many small chunks pieced
 together, which is unreliable. So one 4–6 sentence document summary is generated per doc,
 stored as a normal point tagged `chunk_type=document_summary` at `chunkIndex="summary"`.

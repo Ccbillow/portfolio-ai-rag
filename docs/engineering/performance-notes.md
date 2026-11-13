@@ -24,15 +24,15 @@
 |------|---------|-------|
 | Tika parse (DOCX ~50KB) | < 1s | |
 | Semantic split (1000/150) | < 10ms | Replaced character splitter |
-| RAPTOR summary (1 Claude call) | 2–5s | One-time per document |
+| Document-level summary (1 Claude call) | 2–5s | One-time per document |
 | Contextual Retrieval (parallel, Semaphore 3) | 5–15s | ~20 chunks × ~0.5s each ÷ 3 concurrency |
 | OpenAI embedding (batch=100, ~20 chunks) | 500ms–1s | |
 | BM25-IDF vectorize + IDF persist | < 50ms | In-process, JSON write |
 | Qdrant upsert (20 points) | 50–100ms | |
-| **Total per file (CR + RAPTOR enabled)** | **~10–25s** | |
-| **Total per file (CR + RAPTOR disabled)** | **~2–3s** | Same as before |
+| **Total per file (CR + document-level summary enabled)** | **~10–25s** | |
+| **Total per file (CR + document-level summary disabled)** | **~2–3s** | Same as before |
 
-Contextual Retrieval and RAPTOR add significant ingestion time, but this is a one-time cost per document upload. Query latency is unaffected.
+Contextual Retrieval and the document-level summary add significant ingestion time, but this is a one-time cost per document upload. Query latency is unaffected.
 
 ---
 

@@ -40,7 +40,7 @@ Question → Rule-based gate (QuestionClassifier, 0 LLM cost)
 Upload → Tika parse
 	→ Chunk split (markdown-heading → semantic fallback, 1000/150)
 	→ Metadata enrichment (Claude tags: intent/behavioral/type/project/skills)
-	→ RAPTOR: Claude document summary chunk
+	→ Document-level summary: one Claude summary chunk per document
 	→ [Contextual Retrieval: context prefix per chunk — implemented, disabled by default]
 	→ OpenAI embed (dense) + BM25-IDF vectorize (sparse) + company tagging
 	→ Qdrant upsert → IDF corpus update
@@ -62,13 +62,13 @@ At ingest, Claude tags each chunk with the interview intents it answers (archite
 **Contextual Retrieval** *(implemented, disabled by default)* — [details](docs/design/ingestion-pipeline.md)
 At index time Claude can generate a 1-2 sentence context prefix per chunk (company, project, time) prepended to the embedding text. Off by default — the extra per-chunk Claude call isn't justified at the current corpus size.
 
-**RAPTOR document summary** — [details](docs/design/ingestion-pipeline.md)
-One Claude-generated summary chunk per document is prepended to the Qdrant collection at ingest time. Broad questions ("tell me about your Alipay experience") hit this summary chunk instead of needing to assemble context from many smaller chunks.
+**Document-level summary** — [details](docs/design/ingestion-pipeline.md)
+One Claude-generated summary chunk per document is added to the Qdrant collection at ingest time (a single summary level — not a recursive RAPTOR tree). Broad questions ("tell me about your Alipay experience") hit this summary chunk instead of needing to assemble context from many smaller chunks.
 
 **Cohere reranking** — [details](docs/design/retrieval-strategy.md)
 Retrieves 10 candidate chunks from Qdrant, reranks via cross-encoder (query+document scored jointly), keeps top 5. Cuts prompt noise vs. passing all candidates to the LLM, with better precision than cosine-score ordering.
 
-**Rule-based agent layer** — [sequence diagram](docs/sequence-diagrams/question-classifier-flow.mmd)
+**Rule-based router** — [sequence diagram](docs/sequence-diagrams/question-classifier-flow.mmd)
 Classifies questions (INVALID / OUT_OF_SCOPE / STRATEGIC / CONTACT_REDIRECT / PERSONAL / FACTUAL / TECHNICAL / BEHAVIORAL) before any vector search. Gate types (small talk, out-of-domain, salary, contact, personal) short-circuit with zero API cost; the rest reach retrieval. The type drives both the retrieval strategy and the prompt hint injected downstream.
 
 **Company isolation** — [details](docs/design/company-isolation.md)
@@ -194,7 +194,7 @@ Nginx handles SSL termination and proxies to the Spring Boot container on port 8
 | Doc | What it covers |
 |-----|---------------|
 | [architecture.md](docs/design/architecture.md) | Component diagram, data flow, DB schema |
-| [ingestion-pipeline.md](docs/design/ingestion-pipeline.md) | Ingestion stages: chunking, metadata enrichment, RAPTOR, Contextual Retrieval |
+| [ingestion-pipeline.md](docs/design/ingestion-pipeline.md) | Ingestion stages: chunking, metadata enrichment, document-level summary, Contextual Retrieval |
 | [retrieval-strategy.md](docs/design/retrieval-strategy.md) | Strategy pattern, intent-aware hybrid search, reranking, company filtering |
 | [company-isolation.md](docs/design/company-isolation.md) | Company tagging, focus extraction, allowlist filter, parent-child config |
 | [prompt-design.md](docs/design/prompt-design.md) | Prompt structure, type hints, evolution from monolithic to DB-managed |
@@ -206,7 +206,7 @@ Nginx handles SSL termination and proxies to the Spring Boot container on port 8
 |-----|---------------|
 | [debugging-cases.md](docs/engineering/debugging-cases.md) | Real bugs: symptom → root cause → fix |
 | [performance-notes.md](docs/engineering/performance-notes.md) | Latency, token cost, retrieval quality |
-| [dev-plan.md](docs/engineering/dev-plan.md) | Development phases (completed through package-by-feature refactor + intent-aware retrieval) |
+| [dev-plan.md](docs/engineering/dev-plan.md) | Development phases (completed through Phase 14 engineering hardening) |
 
 **Interview**
 

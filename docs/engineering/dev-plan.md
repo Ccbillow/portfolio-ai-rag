@@ -84,7 +84,7 @@ Ingestion
 - Contextual Retrieval: Claude-generated context prefix prepended to each chunk at index time; improves dense embedding quality;
 - Contextual Retrieval parallelization: `CompletableFuture` + `Semaphore(3)` replaces sequential per-chunk Claude calls; reduces ingestion wall-clock time
 - Semantic chunking: replaced fixed character splitter with paragraph-aware splitter; falls back to sentence boundaries for oversized paragraphs; prevents mid-sentence cuts
-- **RAPTOR document summary**: one Claude-generated summary chunk per document at ingest time (`chunkType=document_summary`); improves recall for broad questions
+- **Document-level summary**: one Claude-generated summary chunk per document at ingest time (`chunkType=document_summary`); improves recall for broad questions
 
 Retrieval
 
@@ -124,7 +124,7 @@ Evolved chunking from naive fixed-size -> simple text splitting -> retrieval-ori
 
 ---
 
-## 🔜 Phase 14 — Engineering Hardening
+## ✅ Phase 14 — Engineering Hardening
 
 - **Tests + CI**: unit tests for the retrieval core; run on push / PR
 - **Flyway**: versioned schema and prompt-template migrations

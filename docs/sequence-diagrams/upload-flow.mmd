@@ -31,7 +31,7 @@ sequenceDiagram
     API->>Claude: ChunkMetadataEnricher — tag chunks in batches of 5 (parallel, throttled)
     Claude-->>API: intent_tags, behavioral_tags, chunk_type, project, skills
 
-    API->>Claude: RAPTOR DocumentSummarizer — 1 summary chunk (prepended at index 0)
+    API->>Claude: DocumentSummarizer (document-level summary) — 1 summary chunk (prepended at index 0)
     Claude-->>API: document summary
 
     opt Contextual Retrieval (disabled by default)

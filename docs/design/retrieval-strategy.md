@@ -9,7 +9,7 @@ a `RetrievalStrategy` is selected, and only that strategy's retrieve logic runs.
 ```
 Question
   │
-  ├─ 1 · Agent gate — QuestionClassifier (rule-based, zero LLM cost)
+  ├─ 1 · Rule gate — QuestionClassifier (rule-based, zero LLM cost)
   │      earlyReturn types short-circuit before any vector search:
   │      INVALID · OUT_OF_SCOPE · STRATEGIC · CONTACT_REDIRECT · PERSONAL
   │
@@ -74,7 +74,7 @@ should → intent_tags matches any query intent  (boost, not filter)
 
 - `must` (company) uses `any` containment — chunks often carry multiple labels (`[OCBC, Deloitte]`).
 - `should` (intents) boosts relevant chunks while broad questions still reach all chunks
-  (important for RAPTOR summary hits — no `must_not` on `document_summary`).
+  (important for document-level summary hits — no `must_not` on `document_summary`).
 - **Fallback**: if the intent-filtered query returns 0 hits (e.g. legacy chunks without tags),
   it retries plain hybrid search to guarantee results.
 - prefetch limit = `candidateK × 2` per vector; fused output capped at `candidateK=10`.
