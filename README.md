@@ -24,26 +24,26 @@ Browser ──HTTPS──► Nginx ──► Spring Boot API
 **Retrieval pipeline:**
 
 ```
-Question → Classifier (rule-based, 0 LLM cost)
-  → Company focus extraction
-  → Query rewrite (pronoun resolution from history)
-  → Hybrid search: dense + BM25-IDF sparse → Qdrant RRF fusion
-  → Cohere cross-encoder rerank (10 candidates → 5)
-  → Company scope filter
-  → Prompt assembly → Claude Haiku (SSE streaming)
+Question → Rule-based gate (QuestionClassifier, 0 LLM cost)
+  → Company focus extraction + pronoun rewrite (from history) + sub-project expansion
+  → Strategy select (RetrievalStrategySelector) → one of:
+      • BEHAVIORAL        intent-aware hybrid + Cohere rerank + company allowlist
+      • FACTUAL_NO_RERANK hybrid only (BM25 wins on dates/logistics)
+      • FACTUAL_EXPERIENCE hybrid + rerank (no score cutoff)
+      • MULTI_COMPANY     per-company search + diversity (no global rerank)
+  → Prompt assembly (format = f(type, strategy)) → Claude Haiku (SSE streaming)
 ```
 
 **Ingestion pipeline:**
 
 ```
-Upload → Tika parse 
-	→ Semantic split (paragraph/sentence-aware, 1000/150)
-  	→ RAPTOR: Claude document summary chunk
-  	→ Contextual Retrieval: Claude context prefix per chunk (parallel, Semaphore 3)
-  	→ OpenAI embed (dense) + BM25-IDF vectorize (sparse)
-  	→ Company tagging 
-  	→ Qdrant upsert 
-  	→ IDF corpus update
+Upload → Tika parse
+	→ Chunk split (markdown-heading → semantic fallback, 1000/150)
+	→ Metadata enrichment (Claude tags: intent/behavioral/type/project/skills)
+	→ RAPTOR: Claude document summary chunk
+	→ [Contextual Retrieval: context prefix per chunk — implemented, disabled by default]
+	→ OpenAI embed (dense) + BM25-IDF vectorize (sparse) + company tagging
+	→ Qdrant upsert → IDF corpus update
 ```
 
 ---
@@ -53,8 +53,14 @@ Upload → Tika parse
 **Hybrid search (dense + BM25-IDF)** — [details](docs/design/retrieval-strategy.md)
 Pure dense search misses exact technical terms ("SofaBoot", "MAT heap dump"). BM25 sparse vectors stored in the same Qdrant point give exact-match recall without Elasticsearch. IDF weights are computed across the corpus and persisted to `idf_corpus.json`, so rare technical terms score higher than common ones. Qdrant fuses both via RRF in-database.
 
-**Contextual Retrieval** — [details](docs/design/ingestion-pipeline.md)
-At index time, Claude generates a 1-2 sentence context description per chunk (company, project, time period) and prepends it to the embedding text. Dense vectors carry richer context; raw text is stored separately for display. Parallel generation with `Semaphore(3)` keeps ingestion time manageable.
+**Per-question retrieval strategy** — [details](docs/design/retrieval-strategy.md)
+Instead of one fixed pipeline, a `RetrievalStrategySelector` routes each question to the strategy that fits it — factual questions lean on BM25 with no rerank cutoff, behavioral questions use intent-boosted hybrid + strict rerank, and career-spanning questions do a per-company search so every employer is represented (a global rerank would just favor the richest-vocabulary company). Each strategy is a small, independently testable unit.
+
+**Intent-aware retrieval (metadata enrichment)** — [details](docs/design/ingestion-pipeline.md)
+At ingest, Claude tags each chunk with the interview intents it answers (architecture, leadership, production_issue…) plus behavioral tags, chunk type, project, and skills — done once, amortized over every query. At query time the question is classified into the same intents, which boost matching chunks in Qdrant (`should` clause).
+
+**Contextual Retrieval** *(implemented, disabled by default)* — [details](docs/design/ingestion-pipeline.md)
+At index time Claude can generate a 1-2 sentence context prefix per chunk (company, project, time) prepended to the embedding text. Off by default — the extra per-chunk Claude call isn't justified at the current corpus size.
 
 **RAPTOR document summary** — [details](docs/design/ingestion-pipeline.md)
 One Claude-generated summary chunk per document is prepended to the Qdrant collection at ingest time. Broad questions ("tell me about your Alipay experience") hit this summary chunk instead of needing to assemble context from many smaller chunks.
@@ -63,10 +69,10 @@ One Claude-generated summary chunk per document is prepended to the Qdrant colle
 Retrieves 10 candidate chunks from Qdrant, reranks via cross-encoder (query+document scored jointly), keeps top 5. Cuts prompt noise vs. passing all candidates to the LLM, with better precision than cosine-score ordering.
 
 **Rule-based agent layer** — [sequence diagram](docs/sequence-diagrams/question-classifier-flow.mmd)
-Classifies questions into INVALID / OUT_OF_SCOPE / STRATEGIC / FACTUAL / TECHNICAL / BEHAVIORAL before any vector search. Handles common cases (small talk, out-of-domain, salary questions) with zero API cost. The type also determines which prompt hint is injected downstream.
+Classifies questions (INVALID / OUT_OF_SCOPE / STRATEGIC / CONTACT_REDIRECT / PERSONAL / FACTUAL / TECHNICAL / BEHAVIORAL) before any vector search. Gate types (small talk, out-of-domain, salary, contact, personal) short-circuit with zero API cost; the rest reach retrieval. The type drives both the retrieval strategy and the prompt hint injected downstream.
 
 **Company isolation** — [details](docs/design/company-isolation.md)
-Each chunk carries a `companies[]` payload tag. At query time, Qdrant filters to the focus company; a post-rerank allowlist filter handles multi-label chunks and the Deloitte→OCBC/Sanofi sub-project hierarchy.
+Each chunk carries a `companies[]` tag (heading/filename/text + parent derivation). At query time Qdrant filters to the focus company; a post-rerank Java allowlist keeps only chunks whose labels fall within `{focus} ∪ siblings ∪ parent` (siblings under the same Deloitte engagement are allowed, unrelated employers dropped); finally a prompt-level guard tells Claude to use only the focus company's facts.
 
 **Prompt design** — [details](docs/design/prompt-design.md)
 All prompts live in MySQL and are hot-reloadable without redeployment. Type-specific hints (FACTUAL / TECHNICAL / BEHAVIORAL) are injected per request based on classifier output, giving each question type its own length, format, and grounding rules.
@@ -80,7 +86,7 @@ Hard refusal rule in the prompt: if evidence is absent from the retrieved contex
 
 | Layer | Choice |
 |-------|--------|
-| Backend | Spring Boot 4, Java 21 |
+| Backend | Spring Boot 3.2, Java 17 |
 | AI integration | LangChain4j |
 | Vector store | Qdrant (named dense + sparse vectors) |
 | Embedding | OpenAI text-embedding-3-small (1536d) |
@@ -99,19 +105,17 @@ Hard refusal rule in the prompt: if evidence is absent from the retrieved contex
 ## Project Structure
 
 ```
-src/main/java/com/simon/rag/
-├── config/          # Spring beans: Qdrant, embedding, security, RAG properties
+src/main/java/com/simon/rag/   # package-by-feature
+├── config/          # Spring beans: Qdrant, embedding, security, RAG properties, executors
 ├── controller/      # REST endpoints: auth, chat (SSE), documents, admin
 ├── service/
-│   └── impl/
-│       ├── ChatServiceImpl.java       # Retrieval orchestration
-│       ├── IngestionRunner.java       # Async ingestion pipeline
-│       ├── QdrantSearchService.java   # Dense + hybrid search, upsert
-│       ├── SparseVectorizer.java      # BM25 sparse vector computation
-│       ├── CohereRerankService.java   # Cross-encoder reranking
-│       ├── QuestionClassifier.java    # Rule-based question gate
-│       ├── PromptBuilder.java         # Context + history assembly
-│       └── MultiQueryExpander.java    # (disabled in prod)
+│   ├── impl/                 # ChatServiceImpl, DocumentServiceImpl, Auth/Eval
+│   ├── retrieval/            # RetrievalService, strategy/, query/ (classifiers), rerank/
+│   ├── ingestion/           # IngestionRunner + SRP stages (split, enrich, summarize, assemble)
+│   ├── vectorstore/         # QdrantSearchService, HybridSearcher, SparseVectorizer, Embedding
+│   ├── prompt/              # PromptBuilder, AnswerFormatResolver, PromptTemplateService
+│   └── cache/               # Redis session/history
+├── llm/             # LlmClient + LlmThrottle (shared Claude rate timeline)
 ├── security/        # JWT filter, UserDetails
 └── comm/            # Enums, interceptors (rate limit), exceptions
 docs/
@@ -126,7 +130,7 @@ docs/
 
 ## Local Development
 
-**Prerequisites:** Docker, Java 21, Maven
+**Prerequisites:** Docker, Java 17, Maven
 
 ```bash
 # Copy and fill in API keys
@@ -190,8 +194,8 @@ Nginx handles SSL termination and proxies to the Spring Boot container on port 8
 | Doc | What it covers |
 |-----|---------------|
 | [architecture.md](docs/design/architecture.md) | Component diagram, data flow, DB schema |
-| [ingestion-pipeline.md](docs/design/ingestion-pipeline.md) | Full ingestion sequence: semantic chunking, Contextual Retrieval, RAPTOR |
-| [retrieval-strategy.md](docs/design/retrieval-strategy.md) | Hybrid search, reranking, company filtering |
+| [ingestion-pipeline.md](docs/design/ingestion-pipeline.md) | Ingestion stages: chunking, metadata enrichment, RAPTOR, Contextual Retrieval |
+| [retrieval-strategy.md](docs/design/retrieval-strategy.md) | Strategy pattern, intent-aware hybrid search, reranking, company filtering |
 | [company-isolation.md](docs/design/company-isolation.md) | Company tagging, focus extraction, allowlist filter, parent-child config |
 | [prompt-design.md](docs/design/prompt-design.md) | Prompt structure, type hints, evolution from monolithic to DB-managed |
 | [tradeoffs.md](docs/design/tradeoffs.md) | Why Qdrant, why Haiku, chunk size evolution, all config decisions |
@@ -202,7 +206,7 @@ Nginx handles SSL termination and proxies to the Spring Boot container on port 8
 |-----|---------------|
 | [debugging-cases.md](docs/engineering/debugging-cases.md) | Real bugs: symptom → root cause → fix |
 | [performance-notes.md](docs/engineering/performance-notes.md) | Latency, token cost, retrieval quality |
-| [dev-plan.md](docs/engineering/dev-plan.md) | Development phases 1–10 (completed) and 11–13 (planned) |
+| [dev-plan.md](docs/engineering/dev-plan.md) | Development phases (completed through package-by-feature refactor + intent-aware retrieval) |
 
 **Interview**
 

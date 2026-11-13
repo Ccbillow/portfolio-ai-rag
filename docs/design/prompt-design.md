@@ -1,99 +1,107 @@
 # Prompt Design
 
-## Why Prompt Management Matters
+## Prompts as Data, Not Code
 
-Prompt quality is the most direct lever on answer quality in a RAG system. Getting it right requires fast iteration: observe a bad answer, update the prompt, test again. If prompts are hardcoded in Java, every change requires a recompile and redeploy — making that loop slow and expensive.
-
-This project treats prompts as first-class data, not code:
-
-- **Configurable** — all templates live in MySQL, editable via admin API without touching Java
-- **Decoupled** — prompt logic is separate from retrieval logic; changing how answers are worded doesn't affect how chunks are retrieved
-- **Manageable** — each template has a version number and updated_at; rollback is a single UPDATE
-- **Extensible** — adding a new question type (e.g. COMPARISON) means adding a new row to `prompt_template`, not modifying `PromptBuilder.java`
+Prompt quality is the most direct lever on answer quality, and tuning it needs a fast loop: observe a
+bad answer → edit the prompt → retest. Hardcoded prompts make every edit a recompile + redeploy. So
+templates are stored in MySQL (`prompt_template`) and edited live via the admin API — no code change,
+effective on the next request. Adding a question type or output format means adding a row, not editing
+`PromptBuilder.java`.
 
 ---
 
-## How the Prompt Is Assembled
+## Assembly (`PromptBuilder.build`)
 
-`PromptBuilder` assembles a single prompt string at query time from templates stored in MySQL:
+A single prompt string is assembled per request from templates + resolved format:
 
 ```
-[system_prompt]
-  ↳ {{typeHint}}           — type-specific rules injected by QuestionClassifier output
-  ↳ {{companyContextHint}} — injected only when a focus company is detected
-  ↳ {{historySection}}     — last 2 conversation turns (from Redis), omitted if none
-  ↳ {{context}}            — top-N reranked chunks
-  ↳ {{question}}           — the user's question
+resolve PromptMode  ← (QuestionType, strategyName, question)   via AnswerFormatResolver
+select typeHint key ← PromptMode
+system_prompt
+  ↳ {{typeHint}}            — format rules for the resolved mode
+  ↳ {{companyContextHint}}  — injected only when a focus company is detected
+  ↳ {{historySection}}      — last 2 turns (Redis), empty if none
+  ↳ {{context}}             — top-N reranked chunks
+  ↳ {{question}}
 ```
 
-The admin API (`PUT /api/admin/prompt-templates/{id}`) updates any template live. Changes take effect on the next request.
+All placeholders are **optional by substitution** — `companyContextHint` / `historySection` resolve to
+`""` when absent. No if/else branching in `PromptBuilder`, just string replacement.
 
 ---
 
-## Current Template Structure (May 2026)
+## Output Format = f(QuestionType, RetrievalStrategy)
 
-### Query-time prompts (called per chat request)
+`AnswerFormatResolver` picks a `PromptMode` from the question type **and the retrieval strategy that ran**
+— scope is already encoded in `strategyName`, so no extra classifier is needed. Each mode maps to one
+type-hint template:
 
-**system_prompt** covers: persona, scope rule, style, compression rules, output constraints, grounding, role accuracy, company scope, fallback behavior.
+| PromptMode | When | Type-hint template | Format intent |
+|------------|------|---------------------|---------------|
+| `SINGLE_STAR` | BEHAVIORAL, single company | `type_hint_behavioral` | one STAR story, 3 sentences |
+| `MULTI_COMPANY_SUMMARY` | MULTI_COMPANY strategy, non-behavioral | `type_hint_multi_company_summary` | cross-company summary |
+| `MULTI_COMPANY_BEHAVIORAL` | MULTI_COMPANY strategy + behavioral theme | `type_hint_multi_company_behavioral` | one story per company |
+| `FACTUAL_SHORT` | FACTUAL | `type_hint_factual` | 1 short sentence |
+| `DEFAULT` | TECHNICAL / STRATEGIC / other | `type_hint_technical` · `type_hint_strategic` · `type_hint_default` | type-specific budget |
 
-**Type hints** (injected as `{{typeHint}}`):
+Multi-company detection reuses `BEHAVIORAL_THEMES` keywords (leadership, conflict, ownership, mentoring…)
+so "highlight your leadership across companies" gets one story per employer, while "what did you do at
+each company" gets a compact summary.
 
-| Type | Core rules | Version |
-|------|-----------|---------|
-| FACTUAL | 1 sentence ≤12 words; include entity name if question names one | v6 |
-| TECHNICAL | 3 sentences for role/project; 1 sentence per project if multiple; 4 points max for skills | v4 |
-| BEHAVIORAL | Exactly 3 sentences (Challenge / Action / Result); blank line between each; HARD STOP after sentence 3 | v5 |
-| STRATEGIC | 2 sentences; diplomatic | v1 |
-| DEFAULT | Max 3 sentences | v1 |
-
-### Ingestion-time prompts (called during document upload, not per query)
-
-**contextual_retrieval_prefix** — called once per chunk during ingestion. Generates a 1-2 sentence context description prepended to the embedding text. Placeholders: `{{docText}}`, `{{chunkText}}`.
-
-**raptor_document_summary** — called once per document during ingestion. Generates a 4-6 sentence document-level summary stored as a standalone Qdrant chunk. Placeholders: `{{fileName}}`, `{{category}}`, `{{docText}}`.
-
-Both are stored in `prompt_template` and hot-reloadable. Changes take effect on the next document ingest.
+> `STRATEGIC` and the other gate types (INVALID / OUT_OF_SCOPE / CONTACT_REDIRECT / PERSONAL) normally
+> short-circuit at `QuestionClassifier` with a canned message and never reach `PromptBuilder`.
 
 ---
 
-## Evolution
+## Templates
 
-### Phase 2–4: Monolithic prompt in Java
+**Query-time** (per chat request):
 
-One string in `PromptBuilder.java` covering all question types with the same rules. Problems: "be concise" was too vague; factual questions and behavioral stories got the same length budget; no company scope enforcement.
+- `system_prompt` — persona, scope rule, style, compression, output constraints, grounding, role
+  accuracy, company scope, fallback.
+- `type_hint_*` — the seven format templates above.
 
-### Phase 5: Per-type length limits, still in Java
+**`companyContextHint`** (built in Java, not a stored template): names the topic company and lists **every
+other known company to ignore**, so leaked mixed-label context isn't used. Also re-asserts company scope
+under pronouns ("it / that / this"). This is the prompt-level guard in the company-isolation chain.
 
-Added `SCOPE RULE` and type-specific length hints inside the system prompt. Helped, but all rules still went to every question type — a strict word limit on factual questions also constrained behavioral answers.
+**Ingestion-time** (per upload, hot-reloadable):
 
-### Phase 7: Moved to MySQL, type hints split out
-
-Created `prompt_template` table. System prompt became a template; each question type got its own hint row. Initial hints were simple one-liners. **Key win:** type-specific rules no longer polluted other types, and prompt changes required no code deploy.
-
-### Phase 8–9: Iterative tightening from test results
-
-Every baseline test round exposed a new failure. Every failure became a new rule:
-
-| Observed failure | Fix |
-|-----------------|-----|
-| Answer included `(Word count: 3)` | Removed counting instruction; added `OUTPUT CONSTRAINT` banning annotations |
-| Behavioral had 4th sentence ("this taught me...") | `HARD STOP` rule + blacklist of trailing phrases |
-| Claude said "I owned" when context said "participated in" | Added `ROLE ACCURACY` — match ownership level exactly |
-| Alipay answer included NetEase details | Added `COMPANY SCOPE` + `{{companyContextHint}}` placeholder |
-| Company name buried mid-sentence | `COMPANY NAME IN ANSWER`: first sentence must begin with "At [CompanyName]," |
-| "How long in Australia?" returned visa and family details | Added ENTITY scope rule + concrete examples to factual hint |
-| Behavioral gave 2 separate stories | Added "PICK ONE STORY ONLY" |
-| Technical role question returned 6 sentences | Explicit per-sub-type budgets (role → 3, multiple projects → 1 each) |
-| Behavioral sentences ran together | Mandatory blank line between each sentence |
+- `contextual_retrieval_prefix` — 1–2 sentence context prefix per chunk. `{{docText}}`, `{{chunkText}}`.
+- `raptor_document_summary` — 4–6 sentence document summary chunk. `{{fileName}}`, `{{category}}`, `{{docText}}`.
 
 ---
 
 ## Design Principles
 
-**Rules over instructions.** "Be concise" doesn't work. "1 sentence ≤12 words" does.
+**Rules over instructions.** "Be concise" fails; "1 sentence ≤ 12 words" works.
 
-**Negative constraints beat positive ideals.** Listing forbidden phrases ("no this taught me", "no going forward") is more effective than describing a good answer.
+**Negative constraints beat positive ideals.** Blacklisting trailing phrases ("no *this taught me*",
+"no *going forward*") beats describing a good answer.
 
-**Type isolation.** Mixing all rules in one prompt means every type gets rules that don't apply to it. A strict factual word limit shouldn't constrain a behavioral story.
+**Type isolation.** Each type/mode gets only its own rules — a strict factual word limit must not
+constrain a behavioral story. This is why hints are split templates, not one monolith.
 
-**Optional placeholders over conditional Java.** `{{companyContextHint}}` resolves to an empty string when no company is detected. `{{historySection}}` resolves to empty when there's no history. No if/else in `PromptBuilder` — just template substitution.
+**Optional placeholders over conditional Java.** Empty-string substitution replaces branching.
+
+---
+
+## Evolution (condensed)
+
+Prompts started as one monolithic Java string (all types, same rules), moved to MySQL with per-type hint
+rows (type rules stopped polluting other types; edits needed no deploy), then tightened iteratively — each
+baseline test failure became a concrete rule:
+
+| Observed failure | Fix |
+|------------------|-----|
+| Answer printed `(Word count: 3)` | banned annotations via `OUTPUT CONSTRAINT` |
+| Behavioral added a 4th "this taught me…" sentence | `HARD STOP` + trailing-phrase blacklist |
+| Claimed "I owned" when context said "participated in" | `ROLE ACCURACY` — match ownership exactly |
+| Alipay answer leaked NetEase details | `COMPANY SCOPE` + `{{companyContextHint}}` |
+| "How long in Australia?" returned visa/family | factual ENTITY scope rule + examples |
+| Behavioral gave two stories | "PICK ONE STORY ONLY" |
+| Cross-company question needed per-employer structure | multi-company modes + dedicated hints |
+
+The current layer — resolving output format from question type + retrieval strategy — grew out of that
+last row: cross-company questions need a different shape than single-company ones, and the strategy already
+knows which it is.
