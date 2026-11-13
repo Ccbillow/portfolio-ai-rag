@@ -48,7 +48,7 @@ public class QuestionClassifier {
             "expected (salary|pay|compensation|rate)|" +
             "what (are|were) you (making|earning|paid)|" +
             "not (good|great|strong) at|" +
-            "area.*to improve|room.*to improve|biggest flaw|" +
+            "area.*to improve|room.*to improve|biggest flaw|shortcomings?|drawbacks?|" +
             "difficult.*(?:manager|colleague|coworker)|" +
             "why should we (?:hire|choose) you over|what makes you better than|" +
             "\\breference(s)?\\b|\\b referee(s)?\\b|" +
