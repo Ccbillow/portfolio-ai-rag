@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -129,7 +130,13 @@ public class ChatServiceImpl implements ChatService {
     public SseEmitter askStream(Dtos.ChatRequest request) {
         long start = System.currentTimeMillis();
         SseEmitter emitter = new SseEmitter(90_000L);
+        // Set once the client is gone or the emitter is finished. LangChain4j 0.35 cannot cancel
+        // the LLM stream, so the handler just stops sending and skips history (real cancel needs LangChain4j 1.x).
+        AtomicBoolean closed = new AtomicBoolean(false);
+        emitter.onCompletion(() -> closed.set(true));
+        emitter.onError(e -> closed.set(true));
         emitter.onTimeout(() -> {
+            closed.set(true);
             try {
                 emitter.send(SseEmitter.event().name("error").data(TIMEOUT_MESSAGE));
                 emitter.complete();
@@ -173,22 +180,25 @@ public class ChatServiceImpl implements ChatService {
                             retrieval.history(), retrieval.focusCompany(), retrieval.strategyName()),
                     new StreamingResponseHandler<AiMessage>() {
                         private final StringBuilder fullAnswer = new StringBuilder();
+                        private final SseTokenNormalizer normalizer = new SseTokenNormalizer();
 
                         @Override
                         public void onNext(String token) {
+                            if (closed.get()) return;
                             fullAnswer.append(token);
+                            String sent = normalizer.normalize(token);
+                            if (sent.isEmpty()) return;
                             try {
-                                // Paragraph breaks → \\n\\n (frontend renders as blank line)
-                                // Single newlines → space (prevents word concatenation in frontend HTML)
-                                String sent = token.replace("\n\n", "\\n\\n").replace("\n", " ");
                                 emitter.send(SseEmitter.event().name("message").data(sent));
                             } catch (Exception e) {
+                                closed.set(true);
                                 emitter.completeWithError(e);
                             }
                         }
 
                         @Override
                         public void onComplete(Response<AiMessage> response) {
+                            if (closed.get()) return;
                             logTokenUsage("stream", response.tokenUsage(), question);
                             redisCacheService.appendConversationHistory(
                                     sessionId, question, fullAnswer.toString());
@@ -205,6 +215,7 @@ public class ChatServiceImpl implements ChatService {
                         @Override
                         public void onError(Throwable error) {
                             log.error("Claude streaming error", error);
+                            if (closed.get()) return;
                             try {
                                 emitter.send(SseEmitter.event().name("error").data(errorMessage(error)));
                                 emitter.complete();
