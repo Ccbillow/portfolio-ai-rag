@@ -47,7 +47,8 @@ dist/
 # ===== RAG eval / test scripts (local only) =====
 docs/test/
 
-# ===== Phase 11 — gitignore generated eval artifacts; baseline.json is checked in =====
+# ===== Eval artifacts — local only (baseline.json holds full answers and KB context) =====
+src/test/resources/eval-reports/baseline.json
 src/test/resources/eval-reports/latest.json
 src/test/resources/eval-reports/candidates.json
 src/test/resources/eval-reports/*-report.md

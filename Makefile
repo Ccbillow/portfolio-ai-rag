@@ -28,4 +28,4 @@ promote-baseline:
 		echo "No latest.json — run 'make eval-run' first."; exit 1; \
 	fi
 	cp src/test/resources/eval-reports/latest.json src/test/resources/eval-reports/baseline.json
-	@echo "Baseline promoted. Don't forget: git add baseline.json && git commit."
+	@echo "Baseline promoted (local only — baseline.json is gitignored)."
