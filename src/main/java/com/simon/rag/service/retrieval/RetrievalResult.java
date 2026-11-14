@@ -17,18 +17,20 @@ public record RetrievalResult(
         String context,
         String focusCompany,
         long retrieveMs,
-        String strategyName
+        String strategyName,
+        /** Pre-final stage snapshots (candidates / reranked) — read by the eval only. */
+        StrategyResult stages
 ) {
     /** Gate rejection — answered rule-based, no retrieval performed. */
     public static RetrievalResult earlyReturn(QuestionType type, String message) {
-        return new RetrievalResult(type, message, null, null, null, null, 0, null);
+        return new RetrievalResult(type, message, null, null, null, null, 0, null, null);
     }
 
-    public static RetrievalResult of(QuestionType type, String history, List<RerankedHit> hits,
+    public static RetrievalResult of(QuestionType type, String history, StrategyResult stages,
                                      String context, String focusCompany,
                                      long retrieveMs, String strategyName) {
-        return new RetrievalResult(type, null, history, hits, context, focusCompany,
-                retrieveMs, strategyName);
+        return new RetrievalResult(type, null, history, stages.hits(), context, focusCompany,
+                retrieveMs, strategyName, stages);
     }
 
     public boolean hasEarlyReturn() {

@@ -30,7 +30,7 @@
 		<maven.compiler.source>${java.version}</maven.compiler.source>
 		<maven.compiler.target>${java.version}</maven.compiler.target>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-		<eval.excluded>eval-run,eval-diff,eval-judge</eval.excluded>
+		<eval.excluded>eval-run,eval-diff,eval-judge,eval-label,eval-retrieval,eval-generation</eval.excluded>
 	</properties>
 
 	<dependencies>

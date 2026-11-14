@@ -21,6 +21,7 @@ public class RagProperties {
     private Cache cache = new Cache();
     private Reranker reranker = new Reranker();
     private HybridSearch hybridSearch = new HybridSearch();
+    private IntentBoost intentBoost = new IntentBoost();
     private ContextualRetrieval contextualRetrieval = new ContextualRetrieval();
     private Raptor raptor = new Raptor();
 
@@ -47,6 +48,16 @@ public class RagProperties {
     @Data
     public static class HybridSearch {
         private boolean enabled = true;
+    }
+
+    /**
+     * On = classify intents and send them to Qdrant as a {@code should} filter.
+     * Off by default: Qdrant filters do not affect scoring, so this is a hard filter
+     * (chunk must carry one of the intents) and it lowered recall in the Phase 15 eval.
+     */
+    @Data
+    public static class IntentBoost {
+        private boolean enabled = false;
     }
 
     @Data

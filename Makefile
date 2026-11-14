@@ -1,4 +1,4 @@
-.PHONY: eval-run eval-diff eval-judge eval-all promote-baseline
+.PHONY: eval-run eval-diff eval-judge eval-all promote-baseline eval-label eval-retrieval eval-generation
 
 MVN_EVAL := mvn -q test -Deval.excluded=
 
@@ -12,6 +12,16 @@ eval-judge:
 	$(MVN_EVAL) -Dtest=EvalJudgeTest -Dgroups=eval-judge
 
 eval-all: eval-run eval-diff eval-judge
+
+# Phase 15 — gold pre-label (review gold-labels.json afterwards), retrieval metrics, generation scores
+eval-label:
+	$(MVN_EVAL) -Dtest=GoldLabelTest -Dgroups=eval-label
+
+eval-retrieval:
+	$(MVN_EVAL) -Dtest=RetrievalEvalTest -Dgroups=eval-retrieval
+
+eval-generation:
+	$(MVN_EVAL) -Dtest=GenerationEvalTest -Dgroups=eval-generation
 
 promote-baseline:
 	@if [ ! -f src/test/resources/eval-reports/latest.json ]; then \

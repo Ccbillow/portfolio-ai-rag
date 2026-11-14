@@ -51,7 +51,7 @@ public class EvalChatServiceImpl implements EvalChatService {
                 return new EvalResult(
                         aCase.id(), aCase.question(), r.earlyReturn(),
                         r.questionType().name(), null,
-                        List.of(),
+                        List.of(), null,
                         new TokenStat(0, 0, 0),
                         new StageLatency(System.currentTimeMillis() - t0, r.retrieveMs(), 0, 0),
                         null);
@@ -61,7 +61,7 @@ public class EvalChatServiceImpl implements EvalChatService {
                         aCase.id(), aCase.question(),
                         "I don't have specific information about that in my knowledge base.",
                         r.questionType().name(), r.focusCompany(),
-                        List.of(),
+                        List.of(), null,
                         new TokenStat(0, 0, 0),
                         new StageLatency(System.currentTimeMillis() - t0, r.retrieveMs(), 0, 0),
                         null);
@@ -100,7 +100,7 @@ public class EvalChatServiceImpl implements EvalChatService {
             return new EvalResult(
                     aCase.id(), aCase.question(), answer,
                     r.questionType().name(), r.focusCompany(),
-                    hitDetails,
+                    hitDetails, r.context(),
                     tokens,
                     new StageLatency(
                             System.currentTimeMillis() - t0,
@@ -113,7 +113,7 @@ public class EvalChatServiceImpl implements EvalChatService {
             log.error("Eval failed for case {}", aCase.id(), e);
             return new EvalResult(
                     aCase.id(), aCase.question(), null,
-                    null, null, List.of(),
+                    null, null, List.of(), null,
                     new TokenStat(0, 0, 0),
                     new StageLatency(System.currentTimeMillis() - t0, 0, 0, 0),
                     e.getClass().getSimpleName() + ": " + e.getMessage());

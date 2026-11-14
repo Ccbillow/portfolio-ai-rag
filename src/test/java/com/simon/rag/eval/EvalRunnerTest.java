@@ -59,6 +59,7 @@ class EvalRunnerTest {
             row.put("checks", checksMap);
             row.put("verdict", checks.verdict());
             row.put("hits", result.hits());
+            row.put("context", result.context());
             row.put("tokens", result.tokens());
             row.put("latency", result.latency());
             if (result.error() != null) row.put("error", result.error());

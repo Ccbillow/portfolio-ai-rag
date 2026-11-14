@@ -9,6 +9,8 @@ public record EvalResult(
         String questionType,
         String focusCompanyResolved,
         List<HitDetail> hits,
+        /** Context passed to the LLM; null when no LLM call was made. Read by the groundedness judge. */
+        String context,
         TokenStat tokens,
         StageLatency latency,
         String error

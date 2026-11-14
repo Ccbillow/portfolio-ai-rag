@@ -46,38 +46,38 @@ class RetrievalStrategiesTest {
     // ── BEHAVIORAL ───────────────────────────────────────────────────
 
     @Test
-    void behavioral_usesIntents_reranksWithCutoff_thenFiltersByCompany() {
+    void behavioral_usesIntents_filtersByCompany_thenReranksWithCutoff() {
         List<IntentTag> intents = List.of(IntentTag.LEADERSHIP);
-        List<SearchHit> candidates = List.of(hit(0, 0.9, "OCBC"), hit(1, 0.8, "OCBC"));
+        List<SearchHit> candidates = List.of(hit(0, 0.9, "OCBC"), hit(1, 0.8, "OCBC", "Alipay"));
+        List<SearchHit> scoped = List.of(candidates.get(0));
         List<RerankedHit> ranked = List.of(new RerankedHit(candidates.get(0), 0.7));
-        List<RerankedHit> filtered = List.of(new RerankedHit(candidates.get(0), 0.7));
         when(intentClassifier.classify("question")).thenReturn(intents);
         when(candidateRetriever.retrieve(ctx.queries(), cfg, "OCBC", siblings, intents)).thenReturn(candidates);
-        when(rerankService.rerank("retrieval query", candidates)).thenReturn(ranked);
-        when(scopeResolver.applyCompanyFilter(ranked, "OCBC", siblings)).thenReturn(filtered);
+        when(scopeResolver.applyCompanyFilter(candidates, "OCBC", siblings)).thenReturn(scoped);
+        when(rerankService.rerank("retrieval query", scoped)).thenReturn(ranked);
 
         var strategy = new BehavioralRetrievalStrategy(
                 intentClassifier, candidateRetriever, rerankService, scopeResolver);
 
         assertEquals("BEHAVIORAL", strategy.name());
-        assertSame(filtered, strategy.retrieve(ctx));
+        assertSame(ranked, strategy.retrieve(ctx).hits());
         verify(rerankService, never()).rerankTopN(any(), any());
     }
 
     // ── FACTUAL_EXPERIENCE ───────────────────────────────────────────
 
     @Test
-    void factualExperience_noIntents_reranksWithoutCutoff_thenFiltersByCompany() {
+    void factualExperience_noIntents_filtersByCompany_thenReranksWithoutCutoff() {
         List<SearchHit> candidates = List.of(hit(0, 0.9, "OCBC"));
         List<RerankedHit> ranked = List.of(new RerankedHit(candidates.get(0), 0.05));
         when(candidateRetriever.retrieve(ctx.queries(), cfg, "OCBC", siblings, List.of())).thenReturn(candidates);
+        when(scopeResolver.applyCompanyFilter(candidates, "OCBC", siblings)).thenReturn(candidates);
         when(rerankService.rerankTopN("retrieval query", candidates)).thenReturn(ranked);
-        when(scopeResolver.applyCompanyFilter(ranked, "OCBC", siblings)).thenReturn(ranked);
 
         var strategy = new FactualExperienceRetrievalStrategy(candidateRetriever, rerankService, scopeResolver);
 
         assertEquals("FACTUAL_EXPERIENCE", strategy.name());
-        assertSame(ranked, strategy.retrieve(ctx));
+        assertSame(ranked, strategy.retrieve(ctx).hits());
         verify(rerankService, never()).rerank(any(), any());
     }
 
@@ -91,7 +91,7 @@ class RetrievalStrategiesTest {
         when(candidateRetriever.retrieve(ctx.queries(), cfg, "OCBC", siblings, List.of())).thenReturn(candidates);
 
         var strategy = new FactualNoRerankRetrievalStrategy(candidateRetriever, props);
-        List<RerankedHit> out = strategy.retrieve(ctx);
+        List<RerankedHit> out = strategy.retrieve(ctx).hits();
 
         assertEquals("FACTUAL_NO_RERANK", strategy.name());
         assertEquals(5, out.size());
@@ -116,7 +116,7 @@ class RetrievalStrategiesTest {
         when(candidateRetriever.retrievePerCompany("retrieval query", cfg, List.of())).thenReturn(candidates);
 
         var strategy = multiCompany();
-        List<RerankedHit> out = strategy.retrieve(ctx);
+        List<RerankedHit> out = strategy.retrieve(ctx).hits();
 
         assertEquals("MULTI_COMPANY", strategy.name());
         assertEquals(2, out.size());
@@ -132,7 +132,7 @@ class RetrievalStrategiesTest {
         when(candidateRetriever.retrievePerCompany("retrieval query", cfg, intents))
                 .thenReturn(List.of(hit(0, 0.9, "Alipay")));
 
-        List<RerankedHit> out = multiCompany().retrieve(ctx);
+        List<RerankedHit> out = multiCompany().retrieve(ctx).hits();
 
         // Current behavior: a company with no candidate (Sinosig) is simply absent.
         assertEquals(1, out.size());

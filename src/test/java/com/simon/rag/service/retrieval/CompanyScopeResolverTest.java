@@ -25,9 +25,8 @@ class CompanyScopeResolverTest {
         resolver = new CompanyScopeResolver(props);
     }
 
-    private static RerankedHit hit(int chunkIndex, String... companies) {
-        return new RerankedHit(
-                new SearchHit(0.5, "t", "f.md", "cat", "doc1", chunkIndex, List.of(companies)), 0.5);
+    private static SearchHit hit(int chunkIndex, String... companies) {
+        return new SearchHit(0.5, "t", "f.md", "cat", "doc1", chunkIndex, List.of(companies));
     }
 
     private static ConversationHistory history(String question, String answer) {
@@ -88,19 +87,19 @@ class CompanyScopeResolverTest {
 
     @Test
     void filter_noFocusCompany_returnsInputUntouched() {
-        List<RerankedHit> ranked = List.of(hit(0, "Alipay"), hit(1, "OCBC"));
+        List<SearchHit> ranked = List.of(hit(0, "Alipay"), hit(1, "OCBC"));
         assertSame(ranked, resolver.applyCompanyFilter(ranked, null, List.of()));
     }
 
     @Test
     void filter_subProjectFocus_keepsFocusSiblingsParent_dropsUnrelated() {
-        RerankedHit focusOnly      = hit(0, "OCBC");
-        RerankedHit engagementMix  = hit(1, "OCBC", "Sanofi", "Deloitte");
-        RerankedHit unrelatedMix   = hit(2, "OCBC", "Alipay");
-        RerankedHit siblingOnly    = hit(3, "Sanofi");
-        RerankedHit untagged       = hit(4);
+        SearchHit focusOnly      = hit(0, "OCBC");
+        SearchHit engagementMix  = hit(1, "OCBC", "Sanofi", "Deloitte");
+        SearchHit unrelatedMix   = hit(2, "OCBC", "Alipay");
+        SearchHit siblingOnly    = hit(3, "Sanofi");
+        SearchHit untagged       = hit(4);
 
-        List<RerankedHit> out = resolver.applyCompanyFilter(
+        List<SearchHit> out = resolver.applyCompanyFilter(
                 List.of(focusOnly, engagementMix, unrelatedMix, siblingOnly, untagged),
                 "OCBC", List.of("Sanofi"));
 
@@ -109,10 +108,10 @@ class CompanyScopeResolverTest {
 
     @Test
     void filter_parentFocus_allowsItsSubProjects() {
-        RerankedHit parentWithChild = hit(0, "Deloitte", "OCBC");
-        RerankedHit parentWithOther = hit(1, "Deloitte", "Alipay");
+        SearchHit parentWithChild = hit(0, "Deloitte", "OCBC");
+        SearchHit parentWithOther = hit(1, "Deloitte", "Alipay");
 
-        List<RerankedHit> out = resolver.applyCompanyFilter(
+        List<SearchHit> out = resolver.applyCompanyFilter(
                 List.of(parentWithChild, parentWithOther), "Deloitte", List.of());
 
         assertEquals(List.of(parentWithChild), out);

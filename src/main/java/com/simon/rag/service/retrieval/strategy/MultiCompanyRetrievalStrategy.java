@@ -6,6 +6,7 @@ import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.retrieval.CandidateRetriever;
 import com.simon.rag.service.retrieval.QuerySignalClassifier;
 import com.simon.rag.service.retrieval.RetrievalContext;
+import com.simon.rag.service.retrieval.StrategyResult;
 import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import com.simon.rag.service.retrieval.query.QueryIntentClassifier;
 import lombok.RequiredArgsConstructor;
@@ -39,7 +40,7 @@ public class MultiCompanyRetrievalStrategy implements RetrievalStrategy {
     }
 
     @Override
-    public List<RerankedHit> retrieve(RetrievalContext ctx) {
+    public StrategyResult retrieve(RetrievalContext ctx) {
         // Behavioral-themed → use intent tags so companies without relevant behavioral
         // content naturally score lower during per-company retrieval.
         List<IntentTag> intents = querySignalClassifier.isBehavioralThemed(ctx.question())
@@ -52,7 +53,7 @@ public class MultiCompanyRetrievalStrategy implements RetrievalStrategy {
         List<RerankedHit> hits = candidates.stream()
                 .map(h -> new RerankedHit(h, h.score()))
                 .collect(Collectors.toList());
-        return enforceCompanyDiversity(hits, candidates);
+        return new StrategyResult(candidates, candidates, enforceCompanyDiversity(hits, candidates));
     }
 
     /**

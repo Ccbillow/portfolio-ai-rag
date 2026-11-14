@@ -1,10 +1,10 @@
 package com.simon.rag.service.retrieval.strategy;
 
 import com.simon.rag.comm.enums.IntentTag;
-import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.retrieval.CandidateRetriever;
 import com.simon.rag.service.retrieval.CompanyScopeResolver;
 import com.simon.rag.service.retrieval.RetrievalContext;
+import com.simon.rag.service.retrieval.StrategyResult;
 import com.simon.rag.service.retrieval.rerank.CohereRerankService;
 import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import com.simon.rag.service.retrieval.query.QueryIntentClassifier;
@@ -16,7 +16,7 @@ import java.util.List;
 
 /**
  * BEHAVIORAL / TECHNICAL / STRATEGIC.
- * Intent classification → hybrid retrieval → Cohere rerank (with minScore cutoff).
+ * Intent classification → hybrid retrieval → company filter → Cohere rerank (with minScore cutoff).
  */
 @Slf4j
 @Component
@@ -34,12 +34,14 @@ public class BehavioralRetrievalStrategy implements RetrievalStrategy {
     }
 
     @Override
-    public List<RerankedHit> retrieve(RetrievalContext ctx) {
+    public StrategyResult retrieve(RetrievalContext ctx) {
         List<IntentTag> intents = queryIntentClassifier.classify(ctx.question());
         log.info("[Strategy] BEHAVIORAL intents={}", intents);
         List<SearchHit> candidates = candidateRetriever.retrieve(
                 ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), intents);
-        List<RerankedHit> ranked = cohereRerankService.rerank(ctx.retrievalQuery(), candidates);
-        return companyScopeResolver.applyCompanyFilter(ranked, ctx.focusCompany(), ctx.siblings());
+        List<SearchHit> scoped = companyScopeResolver.applyCompanyFilter(
+                candidates, ctx.focusCompany(), ctx.siblings());
+        return new StrategyResult(candidates, scoped,
+                cohereRerankService.rerank(ctx.retrievalQuery(), scoped));
     }
 }

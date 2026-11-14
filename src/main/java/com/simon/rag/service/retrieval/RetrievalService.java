@@ -65,7 +65,8 @@ public class RetrievalService {
         RetrievalStrategy strategy = strategySelector.select(ctx);
 
         long t0 = System.currentTimeMillis();
-        List<RerankedHit> hits = strategy.retrieve(ctx);
+        StrategyResult stages = strategy.retrieve(ctx);
+        List<RerankedHit> hits = stages.hits();
         long t1 = System.currentTimeMillis();
 
         // 4. Context Assembly + Coverage Log
@@ -79,7 +80,7 @@ public class RetrievalService {
                 type, strategy.name(), contextCompanies, focusCompany, hits.size(),
                 question.length() > 80 ? question.substring(0, 80) + "…" : question);
 
-        return RetrievalResult.of(type, history.promptText(), hits, context,
+        return RetrievalResult.of(type, history.promptText(), stages, context,
                 focusCompany, t1 - t0, strategy.name());
     }
 

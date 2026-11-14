@@ -28,7 +28,8 @@ class QuestionClassifierTest {
             List<Arguments> args = new ArrayList<>();
             for (JsonNode c : new ObjectMapper().readTree(in)) {
                 args.add(Arguments.of(c.get("id").asText(), c.get("question").asText(),
-                        QuestionType.valueOf(c.get("expectedType").asText())));
+                        QuestionType.valueOf(c.get("expectedType").asText()),
+                        c.get("isEarlyReturn").asBoolean()));
             }
             return args.stream();
         }
@@ -36,8 +37,10 @@ class QuestionClassifierTest {
 
     @ParameterizedTest(name = "{0}: {1}")
     @MethodSource("evalSetCases")
-    void evalSet_classification(String id, String question, QuestionType expected) {
-        assertEquals(expected, classifier.classify(question));
+    void evalSet_classification(String id, String question, QuestionType expected, boolean earlyReturn) {
+        QuestionType actual = classifier.classify(question);
+        assertEquals(expected, actual);
+        assertEquals(earlyReturn, classifier.earlyReturnMessage(actual, question) != null, "gate");
     }
 
     @ParameterizedTest(name = "{1} <- {0}")

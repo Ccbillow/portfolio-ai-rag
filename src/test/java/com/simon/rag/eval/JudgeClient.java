@@ -76,6 +76,108 @@ public final class JudgeClient {
             """.formatted(question, hint == null ? "" : hint,
                     mustContain, mustNotContain, answerA, answerB);
 
+        JsonNode v = chatJson(prompt);
+
+        return new Verdict(
+                v.path("faithfulness").path("a").asInt(),
+                v.path("faithfulness").path("b").asInt(),
+                v.path("completeness").path("a").asInt(),
+                v.path("completeness").path("b").asInt(),
+                v.path("tone").path("a").asInt(),
+                v.path("tone").path("b").asInt(),
+                v.path("verdict").asText("PASS"),
+                v.path("reason").asText(""));
+    }
+
+    public record Score(int groundedness, int completeness, int tone,
+                        List<String> unsupported, String reason) {}
+
+    /**
+     * Absolute scoring of one answer. Groundedness is judged against the retrieved context
+     * (what the bot was allowed to use), completeness against the reference hint.
+     */
+    public Score score(String question, String context, String hint,
+                       List<String> mustContain, String answer) throws Exception {
+
+        String prompt = """
+            You are a strict evaluator for a Q&A bot that answers interview questions in first
+            person about one engineer's work experience. The bot may only use facts from the
+            Context it was given.
+
+            Question:        %s
+            Reference hint:  %s
+            Answer keywords: %s
+
+            CONTEXT GIVEN TO THE BOT:
+            %s
+
+            ANSWER:
+            %s
+
+            Score the answer 0-5 on three axes:
+              GROUNDEDNESS — every factual claim (company, project, role, technology, number,
+                             outcome) is supported by the Context. 5 = all supported;
+                             0 = mostly invented. Ignore the hint for this axis.
+              COMPLETENESS — covers what the hint and keywords require, given what the Context
+                             makes available. Do not reward padding.
+              TONE         — reads like a person answering in an interview: natural and direct,
+                             not a list of clipped fragments, no lesson-learned tail.
+
+            List every claim in the answer that the Context does not support.
+
+            Reply STRICT JSON:
+            {
+              "groundedness": int,
+              "completeness": int,
+              "tone":         int,
+              "unsupported":  ["<claim>", ...],
+              "reason":       "<= 40 words"
+            }
+            """.formatted(question, hint == null ? "" : hint, mustContain, context, answer);
+
+        JsonNode v = chatJson(prompt);
+        List<String> unsupported = new java.util.ArrayList<>();
+        v.path("unsupported").forEach(n -> unsupported.add(n.asText()));
+        return new Score(v.path("groundedness").asInt(), v.path("completeness").asInt(),
+                v.path("tone").asInt(), unsupported, v.path("reason").asText(""));
+    }
+
+    /**
+     * Gold pre-labelling: which of the candidate chunks does a correct answer need?
+     * Returns candidate keys; a human reviews the result before it is trusted.
+     */
+    public List<String> selectGold(String question, String hint, List<String> mustContain,
+                                   Map<String, String> candidates) throws Exception {
+        StringBuilder chunks = new StringBuilder();
+        candidates.forEach((k, text) -> chunks.append("[").append(k).append("]\n").append(text).append("\n\n"));
+
+        String prompt = """
+            You label retrieval ground truth for a Q&A bot that answers interview questions
+            about one engineer's work experience.
+
+            Question:        %s
+            Reference hint:  %s
+            Answer keywords: %s
+
+            Candidate chunks, each headed by its [key]:
+
+            %s
+            Select the chunks that contain the facts a correct answer must be built from.
+            Be strict: pick the smallest sufficient set (usually 1-3). A chunk that is merely
+            on the same topic, or duplicates a better chunk, is NOT gold. If no chunk
+            contains the needed facts, return an empty list.
+
+            Reply STRICT JSON: {"gold": ["<key>", ...], "reason": "<= 25 words"}
+            """.formatted(question, hint == null ? "" : hint, mustContain, chunks);
+
+        JsonNode v = chatJson(prompt);
+        List<String> gold = new java.util.ArrayList<>();
+        v.path("gold").forEach(n -> { if (candidates.containsKey(n.asText())) gold.add(n.asText()); });
+        return gold;
+    }
+
+    /** One user message in, one strict-JSON object out. */
+    private JsonNode chatJson(String prompt) throws Exception {
         Map<String, Object> body = Map.of(
                 "model", model,
                 "temperature", temperature,
@@ -95,16 +197,6 @@ public final class JudgeClient {
         }
         JsonNode root = M.readTree(resp.body());
         String content = root.path("choices").path(0).path("message").path("content").asText();
-        JsonNode v = M.readTree(content);
-
-        return new Verdict(
-                v.path("faithfulness").path("a").asInt(),
-                v.path("faithfulness").path("b").asInt(),
-                v.path("completeness").path("a").asInt(),
-                v.path("completeness").path("b").asInt(),
-                v.path("tone").path("a").asInt(),
-                v.path("tone").path("b").asInt(),
-                v.path("verdict").asText("PASS"),
-                v.path("reason").asText(""));
+        return M.readTree(content);
     }
 }

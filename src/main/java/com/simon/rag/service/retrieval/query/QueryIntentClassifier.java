@@ -2,6 +2,7 @@ package com.simon.rag.service.retrieval.query;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.simon.rag.comm.enums.IntentTag;
+import com.simon.rag.config.RagProperties;
 import com.simon.rag.llm.LlmClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -114,12 +115,14 @@ public class QueryIntentClassifier {
             """;
 
     private final LlmClient llmClient;
+    private final RagProperties ragProperties;
 
     @Value("${rag.intent-classifier.llm-fallback:true}")
     private boolean llmFallbackEnabled;
 
-    public QueryIntentClassifier(LlmClient llmClient) {
+    public QueryIntentClassifier(LlmClient llmClient, RagProperties ragProperties) {
         this.llmClient = llmClient;
+        this.ragProperties = ragProperties;
     }
 
     /**
@@ -127,6 +130,7 @@ public class QueryIntentClassifier {
      * Never throws — returns empty list on failure (retrieval proceeds unfiltered).
      */
     public List<IntentTag> classify(String question) {
+        if (!ragProperties.getIntentBoost().isEnabled()) return List.of();
         List<IntentTag> ruleResult = classifyByRules(question);
         if (!ruleResult.isEmpty()) {
             log.debug("[IntentClassifier] rule {} → {}", question, ruleResult);

@@ -2,6 +2,7 @@ package com.simon.rag.service.retrieval;
 
 import com.simon.rag.config.RagProperties;
 import com.simon.rag.service.cache.ConversationHistory;
+import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -15,7 +16,7 @@ import java.util.stream.Collectors;
 
 /**
  * Resolves company scope for retrieval: focus-company detection, sub-project query
- * expansion, sibling companies, and the company post-filter over reranked hits.
+ * expansion, sibling companies, and the company filter over retrieved candidates.
  */
 @Component
 @RequiredArgsConstructor
@@ -101,14 +102,17 @@ public class CompanyScopeResolver {
                 .toList();
     }
 
-    /** Company-scoped post-filter on reranked hits. */
-    public List<RerankedHit> applyCompanyFilter(List<RerankedHit> ranked,
-                                                String focusCompany, List<String> siblings) {
-        if (focusCompany == null) return ranked;
+    /**
+     * Company-scoped filter on the candidate pool. Runs before rerank so that the
+     * reranker's top-N is not spent on chunks that are dropped afterwards.
+     */
+    public List<SearchHit> applyCompanyFilter(List<SearchHit> candidates,
+                                              String focusCompany, List<String> siblings) {
+        if (focusCompany == null) return candidates;
         Set<String> allowed = buildAllowedCompanies(focusCompany, siblings);
-        return ranked.stream()
-                .filter(rh -> {
-                    List<String> cos = rh.hit().companies();
+        return candidates.stream()
+                .filter(h -> {
+                    List<String> cos = h.companies();
                     if (cos.isEmpty()) return true;
                     if (cos.stream().noneMatch(c -> c.equalsIgnoreCase(focusCompany))) return false;
                     return cos.stream().allMatch(

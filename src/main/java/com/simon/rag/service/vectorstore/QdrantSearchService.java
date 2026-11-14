@@ -226,9 +226,9 @@ public class QdrantSearchService {
     /**
      * Builds a combined Qdrant filter for intent-aware retrieval:
      *   must   → company scope (same semantics as companyFilter())
-     *   should → intent_tags boost (chunks matching classified intents score higher)
+     *   should → intent_tags (chunk must carry at least one of the classified intents)
      *
-     * When must is present, Qdrant treats should as a scoring boost, not a hard filter.
+     * Qdrant filters never affect scoring: should is a hard OR filter, also next to must.
      * No must_not — Cohere rerank handles relevance; hard-excluding document_summary
      * hurts broad questions (e.g. "tell me about yourself") that rely on RAPTOR summaries.
      */

@@ -4,6 +4,7 @@ import com.simon.rag.config.RagProperties;
 import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.retrieval.CandidateRetriever;
 import com.simon.rag.service.retrieval.RetrievalContext;
+import com.simon.rag.service.retrieval.StrategyResult;
 import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -29,12 +30,13 @@ public class FactualNoRerankRetrievalStrategy implements RetrievalStrategy {
     }
 
     @Override
-    public List<RerankedHit> retrieve(RetrievalContext ctx) {
+    public StrategyResult retrieve(RetrievalContext ctx) {
         List<SearchHit> candidates = candidateRetriever.retrieve(
                 ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), List.of());
-        return candidates.stream()
+        List<RerankedHit> hits = candidates.stream()
                 .map(h -> new RerankedHit(h, h.score()))
                 .limit(ragProperties.getReranker().getTopN())
                 .collect(Collectors.toList());
+        return new StrategyResult(candidates, candidates, hits);
     }
 }

@@ -1,9 +1,9 @@
 package com.simon.rag.service.retrieval.strategy;
 
-import com.simon.rag.service.retrieval.RerankedHit;
 import com.simon.rag.service.retrieval.CandidateRetriever;
 import com.simon.rag.service.retrieval.CompanyScopeResolver;
 import com.simon.rag.service.retrieval.RetrievalContext;
+import com.simon.rag.service.retrieval.StrategyResult;
 import com.simon.rag.service.retrieval.rerank.CohereRerankService;
 import com.simon.rag.service.vectorstore.QdrantSearchService.SearchHit;
 import lombok.RequiredArgsConstructor;
@@ -29,10 +29,12 @@ public class FactualExperienceRetrievalStrategy implements RetrievalStrategy {
     }
 
     @Override
-    public List<RerankedHit> retrieve(RetrievalContext ctx) {
+    public StrategyResult retrieve(RetrievalContext ctx) {
         List<SearchHit> candidates = candidateRetriever.retrieve(
                 ctx.queries(), ctx.embeddingCfg(), ctx.focusCompany(), ctx.siblings(), List.of());
-        List<RerankedHit> ranked = cohereRerankService.rerankTopN(ctx.retrievalQuery(), candidates);
-        return companyScopeResolver.applyCompanyFilter(ranked, ctx.focusCompany(), ctx.siblings());
+        List<SearchHit> scoped = companyScopeResolver.applyCompanyFilter(
+                candidates, ctx.focusCompany(), ctx.siblings());
+        return new StrategyResult(candidates, scoped,
+                cohereRerankService.rerankTopN(ctx.retrievalQuery(), scoped));
     }
 }
