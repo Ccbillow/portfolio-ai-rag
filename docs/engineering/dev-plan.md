@@ -124,48 +124,56 @@ Evolved chunking from naive fixed-size -> simple text splitting -> retrieval-ori
 
 ---
 
-## ✅ Phase 14 — Engineering Hardening
+## ✅ Phase 14 — Unit Test and Bugfix
 
 - **Tests + CI**: unit tests for the retrieval core; run on push / PR
-- **Flyway**: versioned schema and prompt-template migrations
-- **Chat history**: persist Q&A, latency, source doc IDs
+- **Persistence**: Flyway migrations; chat history saved with latency and source doc IDs
 - **SSE fixes**: split `\n\n` tokens; stop on client disconnect
 
 ---
 
-## 🔜 Phase 15 — Eval Quantification
+## ✅ Phase 15 — Eval Quantification (Test)
 
-- **Retrieval metrics**: gold chunk labels; Recall@k, MRR, hit rate per strategy
-- **Ablation table**: dense → hybrid → +rerank → +intent boost
-- **Generation metrics**: judge scores groundedness / completeness on all cases
-- **CI gate**: unit tests + classifier eval on PR
+- **CI gate**: classifier accuracy test on PR
+- **Retrieval metrics**: gold chunk labels; Recall@5, MRR, Hit@5 per strategy; ablation dense → hybrid → +rerank → +intent filter
+- **Failure attribution**: each failed case labelled routing / retrieval miss / company filter / rerank drop / generation
+- **Generation metrics**: judge scores groundedness / completeness / tone
+
 
 ---
 
-## 🔜 Phase 16 — Resilience & Guardrails
+## 🔜 Phase 16 — Answer Naturalness & Conceptual Questions
+
+- **Prompt structure**: system / user split, delimited context (injection defense)
+- **Natural tone**: few-shot examples replace rule lists; looser length rules
+- **`CONCEPTUAL` questions**: general knowledge allowed, experience facts from context only; answered even with no hits
+- **Eval**: conceptual and adversarial cases; groundedness must not drop, tone must rise (baseline 4.11 / 5)
+
+---
+
+## 🔜 Phase 17 — Answer Quality & Routing
+
+- **Failure triage**: fix the top categories in the Phase 15 attribution report
+- **Hybrid routing**: rules first, LLM classifier as fallback
+- **Model upgrade**: Haiku 4.5 → 5.5 if the eval set doesn't regress
+
+---
+
+## 🔜 Phase 18 — Resilience & Guardrails (Hi-availability)
 
 - **Rerank fallback**: Cohere failure → answer from RRF order
 - **Daily budget cap**: global token counter in Redis
-- **Injection defense**: system / user split, delimited context, adversarial eval cases
 
 ---
 
-## 🔜 Phase 17 — Observability
+## 🔜 Phase 19 — Observability
 
 - **Structured JSON logging**: `traceId`, strategy, hits, latency
 - **LLM tracing**: Langfuse; one span per stage with latency and tokens
 
 ---
 
-## 🔜 Phase 18 — Answer Quality & Routing
-
-- **Failure triage**: label bad answers as routing / retrieval / generation; fix the top categories
-- **Hybrid routing**: rules first, LLM classifier as fallback
-- **Model upgrade**: Haiku 4.5 → 5.5 if the eval set doesn't regress
-
----
-
-## 🧭 Phase 19 — Agentic RAG (designed, not implemented)
+## 🧭 Phase 20 — Agentic RAG (designed, not implemented)
 
 - **Why an agent**: retry weak retrieval, decompose multi-hop questions, query MySQL and vectors as tools
 - **Why not now**: 2–4 LLM calls per question; harder to evaluate; larger injection surface
@@ -181,7 +189,6 @@ Evolved chunking from naive fixed-size -> simple text splitting -> retrieval-ori
 - [Ingestion] Duration queries: extract tenure dates from MySQL structured fields, append to context
 - [Retrieval] Semantic answer caching (embedding similarity, not MD5)
 - [Generation] Multi-company comparison: detect "compare X vs Y", run two scoped retrieval pipelines, merge contexts
-- [Generation] `CONCEPTUAL` question type; replace prompt rule lists with few-shot examples (only if Phase 18 triage supports it)
 - [Generation] True stream cancellation on client disconnect (needs LangChain4j 1.x)
 - [Evaluation] Thumbs up/down feedback; stored in MySQL for retrieval quality analysis
 - [Frontend] Source chunk expander: click source chip to view full chunk text
